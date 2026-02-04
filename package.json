@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "dev": "concurrently \"dotnet run --project backend/NFeBackend.csproj\" \"vite\"",
+    "dev": "concurrently \"cd backend && dotnet run\" \"vite\"",
     "build": "tsc && vite build",
     "preview": "vite preview"
   },

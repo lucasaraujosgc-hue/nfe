@@ -5,11 +5,19 @@ using System.Text;
 using System.Xml.Linq;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
-using Microsoft.AspNetCore.Http; // Necessário para IFormFile
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Hosting; // Ensure this is available
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Configuração de CORS para permitir desenvolvimento local
+// --- FORÇAR PORTA 5000 (CRUCIAL PARA O PROXY DO VITE) ---
+builder.WebHost.ConfigureKestrel(serverOptions =>
+{
+    // Escuta em todos os IPs (0.0.0.0) na porta 5000
+    serverOptions.ListenAnyIP(5000);
+});
+
+// Configuração de CORS
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("AllowAll",
@@ -20,15 +28,14 @@ var app = builder.Build();
 
 app.UseCors("AllowAll");
 
-Console.WriteLine("=== NFe Manager Pro Backend Started ===");
-Console.WriteLine($"Environment: {app.Environment.EnvironmentName}");
+Console.WriteLine("------------------------------------------------");
+Console.WriteLine("   NFe Manager Pro - Backend Iniciado");
+Console.WriteLine("   URL: http://localhost:5000");
+Console.WriteLine("------------------------------------------------");
 
 // --- CONFIGURAÇÃO DE DIRETÓRIOS ---
-// Lógica robusta para determinar diretórios de dados
 string BaseDataPath;
 string BaseCertPath;
-
-// Verifica se estamos no ambiente Docker padrão (/app)
 bool isDocker = Directory.Exists("/app");
 
 if (isDocker)
@@ -38,62 +45,44 @@ if (isDocker)
 }
 else
 {
-    // Fallback para desenvolvimento local (Windows/Mac/Linux sem Docker)
+    // Como mudamos o script para rodar dentro da pasta backend, o diretório atual é o do projeto
     var currentDir = Directory.GetCurrentDirectory();
+    // Salva em uma pasta acima ou na própria pasta para facilitar debug
     BaseDataPath = Path.Combine(currentDir, "local_storage", "data");
     BaseCertPath = Path.Combine(currentDir, "local_storage", "certificates");
-    Console.WriteLine($"[INFO] Rodando fora do Docker. Usando caminhos locais: {BaseDataPath}");
+    Console.WriteLine($"[INFO] Modo Local. Salvando dados em: {BaseDataPath}");
 }
 
-// Inicialização: Tentar criar diretórios e listar conteúdo para debug
+// Inicialização segura de diretórios
 try {
-    if (!Directory.Exists(BaseDataPath)) {
-        Console.WriteLine($"Creating directory: {BaseDataPath}");
-        Directory.CreateDirectory(BaseDataPath);
-    } else {
-        Console.WriteLine($"Directory exists: {BaseDataPath}");
-    }
-
-    if (!Directory.Exists(BaseCertPath)) {
-        Console.WriteLine($"Creating directory: {BaseCertPath}");
-        Directory.CreateDirectory(BaseCertPath);
-    } else {
-        Console.WriteLine($"Directory exists: {BaseCertPath}");
-    }
+    if (!Directory.Exists(BaseDataPath)) Directory.CreateDirectory(BaseDataPath);
+    if (!Directory.Exists(BaseCertPath)) Directory.CreateDirectory(BaseCertPath);
 } catch (Exception ex) {
-    Console.WriteLine($"FATAL: Failed to access/create directories: {ex.Message}");
-    // Se falhar a criação de diretórios, o app não deve rodar corretamente, mas evitamos crash total
+    Console.WriteLine($"[AVISO] Falha ao criar diretórios: {ex.Message}");
 }
-
-Console.WriteLine($"Listening on: http://0.0.0.0:5000");
 
 // --- ENDPOINTS ---
 
-// 1. Endpoint de Upload de Certificado
 app.MapPost("/api/upload-cert", async (HttpContext context) =>
 {
     try 
     {
+        Console.WriteLine("-> Recebendo upload de certificado...");
         if (!context.Request.HasFormContentType)
-            return Results.BadRequest("Content-Type inválido. Esperado multipart/form-data.");
+            return Results.BadRequest("Content-Type inválido.");
 
         var form = await context.Request.ReadFormAsync();
         var file = form.Files["file"]; 
 
         if (file == null || file.Length == 0)
-            return Results.BadRequest("Nenhum arquivo encontrado no campo 'file'.");
+            return Results.BadRequest("Arquivo vazio.");
 
-        // Sanitizar nome do arquivo
         var fileName = Path.GetFileName(file.FileName);
         var safeFileName = fileName.Replace(" ", "_");
         var filePath = Path.Combine(BaseCertPath, safeFileName);
         
-        Console.WriteLine($"Recebendo arquivo: {fileName} -> {filePath}");
-
-        // Garantir diretório (caso volume tenha montado vazio ou deletado)
+        // Assegurar diretório antes de salvar
         if (!Directory.Exists(BaseCertPath)) Directory.CreateDirectory(BaseCertPath);
-
-        // Deletar se já existir para substituir
         if (File.Exists(filePath)) File.Delete(filePath);
 
         using (var stream = new FileStream(filePath, FileMode.Create))
@@ -101,30 +90,21 @@ app.MapPost("/api/upload-cert", async (HttpContext context) =>
             await file.CopyToAsync(stream);
         }
         
-        Console.WriteLine("Upload concluído com sucesso.");
+        Console.WriteLine($"-> Certificado salvo: {safeFileName}");
         return Results.Ok(new { message = "Upload realizado", filename = safeFileName, path = filePath });
-    }
-    catch (UnauthorizedAccessException uex)
-    {
-        Console.WriteLine($"ERRO PERMISSÃO: {uex.Message}");
-        return Results.Problem($"Permissão negada ao salvar em {BaseCertPath}. Tente rodar como Admin ou verifique permissões da pasta.");
     }
     catch (Exception ex)
     {
-        Console.WriteLine($"ERRO UPLOAD: {ex.ToString()}");
-        return Results.Problem($"Erro interno ao salvar arquivo: {ex.Message}");
+        Console.WriteLine($"[ERRO UPLOAD] {ex.Message}");
+        return Results.Problem($"Erro no servidor: {ex.Message}");
     }
 }).DisableAntiforgery();
 
-// 2. Endpoint de Banco de Dados
 var dbPath = Path.Combine(BaseDataPath, "db.json");
 
 app.MapGet("/api/db", async () =>
 {
-    if (!File.Exists(dbPath)) {
-        Console.WriteLine($"DB request: File not found at {dbPath}. Returning empty structure.");
-        return Results.Json(new { companies = new List<object>(), invoices = new List<object>() });
-    }
+    if (!File.Exists(dbPath)) return Results.Json(new { companies = new List<object>(), invoices = new List<object>() });
     var content = await File.ReadAllTextAsync(dbPath);
     return Results.Content(content, "application/json");
 });
@@ -137,22 +117,21 @@ app.MapPost("/api/db", async (HttpContext context) =>
         
         if (!Directory.Exists(BaseDataPath)) Directory.CreateDirectory(BaseDataPath);
         
+        // Validar e formatar JSON
         var parsed = JsonConvert.DeserializeObject(body);
         var indented = JsonConvert.SerializeObject(parsed, Formatting.Indented);
 
         await File.WriteAllTextAsync(dbPath, indented);
-        Console.WriteLine($"Database saved to {dbPath} ({indented.Length} bytes)");
         return Results.Ok(new { success = true });
     } catch (Exception ex) {
-        Console.WriteLine($"Error saving DB: {ex.Message}");
+        Console.WriteLine($"[ERRO DB] {ex.Message}");
         return Results.Problem(ex.Message);
     }
 });
 
-// 3. Endpoint de Consulta SEFAZ (DistDFe)
 app.MapPost("/api/sefaz/dist-dfe", async (HttpContext context) =>
 {
-    Console.WriteLine($"[{DateTime.Now}] Received request for /api/sefaz/dist-dfe");
+    Console.WriteLine($"-> Processando Consulta SEFAZ (DistDFe)");
     try
     {
         var requestBody = await new StreamReader(context.Request.Body).ReadToEndAsync();
@@ -162,19 +141,19 @@ app.MapPost("/api/sefaz/dist-dfe", async (HttpContext context) =>
         string password = json["password"]?.ToString() ?? "";
         string companyId = context.Request.Headers["X-Company-ID"].ToString();
 
-        if (string.IsNullOrEmpty(companyId)) return Results.BadRequest("X-Company-ID header missing");
+        if (string.IsNullOrEmpty(companyId)) return Results.BadRequest("Header X-Company-ID ausente");
 
-        if (!File.Exists(dbPath)) return Results.NotFound("Database not found");
+        if (!File.Exists(dbPath)) return Results.NotFound("Banco de dados vazio");
         var dbContent = await File.ReadAllTextAsync(dbPath);
         var dbJson = JObject.Parse(dbContent);
         
         var company = dbJson["companies"]?.FirstOrDefault(c => c["id"]?.ToString() == companyId);
-        if (company == null) return Results.NotFound("Company not found in DB");
+        if (company == null) return Results.NotFound("Empresa não encontrada");
 
         string certName = company["certificateName"]?.ToString() ?? "";
-        
         var certPath = Path.Combine(BaseCertPath, certName);
         
+        // Fallback de nome (com/sem underscore)
         if (!File.Exists(certPath))
         {
             var altPath = Path.Combine(BaseCertPath, certName.Replace(" ", "_"));
@@ -183,31 +162,26 @@ app.MapPost("/api/sefaz/dist-dfe", async (HttpContext context) =>
         
         if (!File.Exists(certPath))
         {
-            Console.WriteLine($"Error: Certificate not found at {certPath}");
-            return Results.BadRequest($"Certificado não encontrado no servidor em: {certPath}. Faça o upload novamente.");
+            Console.WriteLine($"[ERRO] Certificado não encontrado: {certPath}");
+            return Results.BadRequest($"Certificado não encontrado no disco.");
         }
-
-        Console.WriteLine($"Loading Certificate: {certPath}");
 
         X509Certificate2 certificate;
         try 
         {
-             // Tenta carregar sem persistência de chave (bom para Docker/Linux)
              certificate = new X509Certificate2(certPath, password, X509KeyStorageFlags.EphemeralKeySet);
         } 
         catch 
         {
-             Console.WriteLine("Fallback: EphemeralKeySet failed, trying default flags...");
              try 
              {
-                 // Fallback para Windows/IIS
                  certificate = new X509Certificate2(certPath, password, 
                     X509KeyStorageFlags.MachineKeySet | X509KeyStorageFlags.PersistKeySet | X509KeyStorageFlags.Exportable);
              } 
              catch (System.Security.Cryptography.CryptographicException ce) 
              {
-                 Console.WriteLine($"Crypto Error: {ce.Message}");
-                 return Results.BadRequest($"Falha ao abrir certificado (Senha incorreta?): {ce.Message}");
+                 Console.WriteLine($"[ERRO CRYPTO] {ce.Message}");
+                 return Results.BadRequest($"Senha do certificado incorreta ou arquivo inválido.");
              }
         }
 
@@ -227,9 +201,6 @@ app.MapPost("/api/sefaz/dist-dfe", async (HttpContext context) =>
         client.Timeout = TimeSpan.FromSeconds(30);
         
         var url = "https://www1.nfe.fazenda.gov.br/NFeDistribuicaoDFe/NFeDistribuicaoDFe.asmx";
-        
-        Console.WriteLine($"Sending SOAP Request to {url}...");
-        
         var content = new StringContent(soapEnvelope, Encoding.UTF8, "application/soap+xml");
 
         var response = await client.PostAsync(url, content);
@@ -237,28 +208,24 @@ app.MapPost("/api/sefaz/dist-dfe", async (HttpContext context) =>
 
         if (!response.IsSuccessStatusCode)
         {
-            Console.WriteLine($"SEFAZ Error {response.StatusCode}: {responseXmlStr}");
+            Console.WriteLine($"[SEFAZ HTTP ERRO] {response.StatusCode}");
             return Results.StatusCode((int)response.StatusCode);
         }
-
-        Console.WriteLine("SEFAZ Response received. Parsing...");
 
         var doc = XDocument.Parse(responseXmlStr);
         XNamespace nsSoap = "http://www.w3.org/2003/05/soap-envelope";
         XNamespace nsNfe = "http://www.portalfiscal.inf.br/nfe";
 
         var body = doc.Descendants(nsSoap + "Body").FirstOrDefault();
-        var nfeDistResponse = body?.Descendants(nsNfe + "nfeDistDFeInteresseResponse").FirstOrDefault();
-        var nfeResult = nfeDistResponse?.Descendants(nsNfe + "nfeDistDFeInteresseResult").FirstOrDefault();
-        var retDistDFeInt = nfeResult?.Descendants(nsNfe + "retDistDFeInt").FirstOrDefault();
+        var retDistDFeInt = body?.Descendants(nsNfe + "retDistDFeInt").FirstOrDefault();
 
-        if (retDistDFeInt == null) return Results.Problem("Invalid SEFAZ Response format");
+        if (retDistDFeInt == null) return Results.Problem("XML de resposta da SEFAZ inválido.");
 
         var cStat = retDistDFeInt.Element(nsNfe + "cStat")?.Value;
         var xMotivo = retDistDFeInt.Element(nsNfe + "xMotivo")?.Value;
         var maxNSU = retDistDFeInt.Element(nsNfe + "maxNSU")?.Value;
         
-        Console.WriteLine($"SEFAZ Status: {cStat} - {xMotivo}");
+        Console.WriteLine($"[SEFAZ] Status: {cStat} - {xMotivo}");
 
         var processedInvoices = new List<object>();
 
@@ -269,58 +236,61 @@ app.MapPost("/api/sefaz/dist-dfe", async (HttpContext context) =>
             {
                 foreach (var docZip in lote.Elements(nsNfe + "docZip"))
                 {
-                    var nsu = docZip.Attribute("NSU")?.Value;
-                    var schema = docZip.Attribute("schema")?.Value;
-                    var base64Content = docZip.Value;
+                    try {
+                        var nsu = docZip.Attribute("NSU")?.Value;
+                        var schema = docZip.Attribute("schema")?.Value;
+                        var base64Content = docZip.Value;
+                        var xmlContent = DecompressGZip(base64Content);
+                        var docXml = XDocument.Parse(xmlContent);
 
-                    var xmlContent = DecompressGZip(base64Content);
-                    var docXml = XDocument.Parse(xmlContent);
-
-                    if (schema == "resNFe_v1.01.xsd")
-                    {
-                        var resNFe = docXml.Root;
-                        processedInvoices.Add(new {
-                            accessKey = resNFe?.Element(nsNfe + "chNFe")?.Value,
-                            emitenteCNPJ = resNFe?.Element(nsNfe + "CNPJ")?.Value ?? resNFe?.Element(nsNfe + "CPF")?.Value,
-                            emitenteName = resNFe?.Element(nsNfe + "xNome")?.Value,
-                            emissionDate = resNFe?.Element(nsNfe + "dhEmi")?.Value,
-                            amount = double.Parse(resNFe?.Element(nsNfe + "vNF")?.Value?.Replace(".", ",") ?? "0"),
-                            status = resNFe?.Element(nsNfe + "cSitNFe")?.Value == "1" ? "authorized" : "canceled",
-                            nsu = nsu,
-                            numero = "000",
-                            serie = "0",
-                            companyId = companyId,
-                            id = $"inv-{Guid.NewGuid()}",
-                            downloaded = false
-                        });
-                    }
-                    else if (schema == "procNFe_v4.00.xsd")
-                    {
-                        var nfe = docXml.Descendants(nsNfe + "NFe").FirstOrDefault();
-                        var infNFe = nfe?.Element(nsNfe + "infNFe");
-                        var ide = infNFe?.Element(nsNfe + "ide");
-                        var emit = infNFe?.Element(nsNfe + "emit");
-                        var total = infNFe?.Element(nsNfe + "total")?.Element(nsNfe + "ICMSTot");
-                        var prot = docXml.Descendants(nsNfe + "protNFe").FirstOrDefault()?.Element(nsNfe + "infProt");
-
-                        processedInvoices.Add(new
+                        if (schema == "resNFe_v1.01.xsd")
                         {
-                            accessKey = prot?.Element(nsNfe + "chNFe")?.Value,
-                            emitenteCNPJ = emit?.Element(nsNfe + "CNPJ")?.Value,
-                            emitenteName = emit?.Element(nsNfe + "xNome")?.Value,
-                            emissionDate = ide?.Element(nsNfe + "dhEmi")?.Value,
-                            authorizationDate = prot?.Element(nsNfe + "dhRecbto")?.Value,
-                            amount = double.Parse(total?.Element(nsNfe + "vNF")?.Value?.Replace(".", ",") ?? "0"),
-                            status = "authorized",
-                            nsu = nsu,
-                            numero = ide?.Element(nsNfe + "nNF")?.Value,
-                            serie = ide?.Element(nsNfe + "serie")?.Value,
-                            uf = emit?.Element(nsNfe + "enderEmit")?.Element(nsNfe + "UF")?.Value,
-                            operationType = ide?.Element(nsNfe + "tpNF")?.Value == "0" ? "Entrada" : "Saida",
-                            companyId = companyId,
-                            id = $"inv-{Guid.NewGuid()}",
-                            downloaded = true
-                        });
+                            var resNFe = docXml.Root;
+                            processedInvoices.Add(new {
+                                accessKey = resNFe?.Element(nsNfe + "chNFe")?.Value,
+                                emitenteCNPJ = resNFe?.Element(nsNfe + "CNPJ")?.Value ?? resNFe?.Element(nsNfe + "CPF")?.Value,
+                                emitenteName = resNFe?.Element(nsNfe + "xNome")?.Value,
+                                emissionDate = resNFe?.Element(nsNfe + "dhEmi")?.Value,
+                                amount = double.Parse(resNFe?.Element(nsNfe + "vNF")?.Value?.Replace(".", ",") ?? "0"),
+                                status = resNFe?.Element(nsNfe + "cSitNFe")?.Value == "1" ? "authorized" : "canceled",
+                                nsu = nsu,
+                                numero = "000",
+                                serie = "0",
+                                companyId = companyId,
+                                id = $"inv-{Guid.NewGuid()}",
+                                downloaded = false
+                            });
+                        }
+                        else if (schema == "procNFe_v4.00.xsd")
+                        {
+                            var nfe = docXml.Descendants(nsNfe + "NFe").FirstOrDefault();
+                            var infNFe = nfe?.Element(nsNfe + "infNFe");
+                            var ide = infNFe?.Element(nsNfe + "ide");
+                            var emit = infNFe?.Element(nsNfe + "emit");
+                            var total = infNFe?.Element(nsNfe + "total")?.Element(nsNfe + "ICMSTot");
+                            var prot = docXml.Descendants(nsNfe + "protNFe").FirstOrDefault()?.Element(nsNfe + "infProt");
+
+                            processedInvoices.Add(new
+                            {
+                                accessKey = prot?.Element(nsNfe + "chNFe")?.Value,
+                                emitenteCNPJ = emit?.Element(nsNfe + "CNPJ")?.Value,
+                                emitenteName = emit?.Element(nsNfe + "xNome")?.Value,
+                                emissionDate = ide?.Element(nsNfe + "dhEmi")?.Value,
+                                authorizationDate = prot?.Element(nsNfe + "dhRecbto")?.Value,
+                                amount = double.Parse(total?.Element(nsNfe + "vNF")?.Value?.Replace(".", ",") ?? "0"),
+                                status = "authorized",
+                                nsu = nsu,
+                                numero = ide?.Element(nsNfe + "nNF")?.Value,
+                                serie = ide?.Element(nsNfe + "serie")?.Value,
+                                uf = emit?.Element(nsNfe + "enderEmit")?.Element(nsNfe + "UF")?.Value,
+                                operationType = ide?.Element(nsNfe + "tpNF")?.Value == "0" ? "Entrada" : "Saida",
+                                companyId = companyId,
+                                id = $"inv-{Guid.NewGuid()}",
+                                downloaded = true
+                            });
+                        }
+                    } catch (Exception parseEx) {
+                        Console.WriteLine($"[ERRO PARSE DOC] {parseEx.Message}");
                     }
                 }
             }
@@ -330,16 +300,12 @@ app.MapPost("/api/sefaz/dist-dfe", async (HttpContext context) =>
     }
     catch (Exception ex)
     {
-        Console.WriteLine($"EXCEPTION: {ex.ToString()}");
+        Console.WriteLine($"[ERRO GERAL] {ex.ToString()}");
         return Results.Problem($"Erro Interno: {ex.Message}");
     }
 });
 
-try {
-    app.Run("http://0.0.0.0:5000");
-} catch (Exception ex) {
-    Console.WriteLine($"FATAL ERROR STARTING SERVER: {ex.Message}");
-}
+app.Run(); // Use padrão do launchSettings.json ou Kestrel configurado acima
 
 string DecompressGZip(string base64)
 {
