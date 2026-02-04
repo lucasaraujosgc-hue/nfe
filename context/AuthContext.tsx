@@ -14,10 +14,10 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   });
 
   const login = (userInput: string, passInput: string) => {
-    // Correção para Vite: Utilizar import.meta.env em vez de process.env
-    // Por padrão (se não houver .env): usuário = 'user', senha = 'password'
-    const validUser = (import.meta as any).env.VITE_USER || 'user';
-    const validPass = (import.meta as any).env.VITE_PASSWORD || 'password';
+    // Vite substitui import.meta.env estaticamente. O uso de casting (as any) quebra essa substituição.
+    // Acessamos diretamente. O arquivo vite-env.d.ts resolve o erro de tipagem do TypeScript.
+    const validUser = import.meta.env.VITE_USER || 'user';
+    const validPass = import.meta.env.VITE_PASSWORD || 'password';
 
     if (userInput === validUser && passInput === validPass) {
       setIsAuthenticated(true);
