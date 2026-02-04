@@ -25,19 +25,30 @@ Console.WriteLine($"Environment: {app.Environment.EnvironmentName}");
 Console.WriteLine($"Listening on: http://0.0.0.0:5000");
 
 // --- CONFIGURAÇÃO DE DIRETÓRIOS (VOLUMES DOCKER) ---
+// Estes caminhos DEVEM coincidir com o que foi montado no Docker
 string BaseDataPath = "/app/data";
 string BaseCertPath = "/app/certificates";
 
-// Garantir que diretórios existam
+// Inicialização: Tentar criar diretórios e listar conteúdo para debug
 try {
-    if (!Directory.Exists(BaseDataPath)) Directory.CreateDirectory(BaseDataPath);
-    if (!Directory.Exists(BaseCertPath)) Directory.CreateDirectory(BaseCertPath);
-} catch (Exception ex) {
-    Console.WriteLine($"FATAL: Failed to create directories: {ex.Message}");
-}
+    if (!Directory.Exists(BaseDataPath)) {
+        Console.WriteLine($"Creating directory: {BaseDataPath}");
+        Directory.CreateDirectory(BaseDataPath);
+    } else {
+        Console.WriteLine($"Directory exists: {BaseDataPath}. Files found:");
+        foreach(var f in Directory.GetFiles(BaseDataPath)) Console.WriteLine($" - {Path.GetFileName(f)}");
+    }
 
-Console.WriteLine($"Database Path: {BaseDataPath}");
-Console.WriteLine($"Certificates Path: {BaseCertPath}");
+    if (!Directory.Exists(BaseCertPath)) {
+        Console.WriteLine($"Creating directory: {BaseCertPath}");
+        Directory.CreateDirectory(BaseCertPath);
+    } else {
+        Console.WriteLine($"Directory exists: {BaseCertPath}. Files found:");
+        foreach(var f in Directory.GetFiles(BaseCertPath)) Console.WriteLine($" - {Path.GetFileName(f)}");
+    }
+} catch (Exception ex) {
+    Console.WriteLine($"FATAL: Failed to access/create directories: {ex.Message}");
+}
 
 // --- ENDPOINTS ---
 
@@ -61,6 +72,9 @@ app.MapPost("/api/upload-cert", async (HttpContext context) =>
         var filePath = Path.Combine(BaseCertPath, safeFileName);
         
         Console.WriteLine($"Recebendo arquivo: {fileName} -> {filePath}");
+
+        // Garantir diretório (caso volume tenha montado vazio)
+        if (!Directory.Exists(BaseCertPath)) Directory.CreateDirectory(BaseCertPath);
 
         // Deletar se já existir para substituir
         if (File.Exists(filePath)) File.Delete(filePath);
@@ -91,17 +105,34 @@ var dbPath = Path.Combine(BaseDataPath, "db.json");
 
 app.MapGet("/api/db", async () =>
 {
-    if (!File.Exists(dbPath)) return Results.Json(new { companies = new List<object>(), invoices = new List<object>() });
+    if (!File.Exists(dbPath)) {
+        Console.WriteLine($"DB request: File not found at {dbPath}. Returning empty structure.");
+        return Results.Json(new { companies = new List<object>(), invoices = new List<object>() });
+    }
     var content = await File.ReadAllTextAsync(dbPath);
     return Results.Content(content, "application/json");
 });
 
 app.MapPost("/api/db", async (HttpContext context) =>
 {
-    using var reader = new StreamReader(context.Request.Body);
-    var body = await reader.ReadToEndAsync();
-    await File.WriteAllTextAsync(dbPath, body);
-    return Results.Ok(new { success = true });
+    try {
+        using var reader = new StreamReader(context.Request.Body);
+        var body = await reader.ReadToEndAsync();
+        
+        // Garantir diretório (segurança extra)
+        if (!Directory.Exists(BaseDataPath)) Directory.CreateDirectory(BaseDataPath);
+        
+        // Validar JSON e re-formatar para ficar legível no disco (Indented)
+        var parsed = JsonConvert.DeserializeObject(body);
+        var indented = JsonConvert.SerializeObject(parsed, Formatting.Indented);
+
+        await File.WriteAllTextAsync(dbPath, indented);
+        Console.WriteLine($"Database saved to {dbPath} ({indented.Length} bytes)");
+        return Results.Ok(new { success = true });
+    } catch (Exception ex) {
+        Console.WriteLine($"Error saving DB: {ex.Message}");
+        return Results.Problem(ex.Message);
+    }
 });
 
 // 3. Endpoint de Consulta SEFAZ (DistDFe)

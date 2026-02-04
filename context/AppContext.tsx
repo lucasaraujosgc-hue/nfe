@@ -14,6 +14,7 @@ interface AppContextType {
   verifyCertificate: (file: File | null, password: string) => Promise<void>;
   clearLogs: () => void;
   isLoading: boolean;
+  isError: boolean; // Novo estado para indicar erro de conexão
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
@@ -23,34 +24,41 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const [invoices, setInvoices] = useState<Invoice[]>([]);
   const [logs, setLogs] = useState<SystemLog[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+  const [isError, setIsError] = useState(false);
   
   const [isDataLoaded, setIsDataLoaded] = useState(false);
 
   // 1. Carregar dados do banco de dados local
   useEffect(() => {
-    fetch('/api/db')
-      .then(res => {
-        if (!res.ok) throw new Error('Falha ao carregar dados');
-        return res.json();
-      })
-      .then(data => {
-        if (data.companies) setCompanies(data.companies);
-        if (data.invoices) setInvoices(data.invoices);
-        setIsDataLoaded(true);
-        console.log('Dados carregados de /app/data/db.json');
-      })
-      .catch(err => {
-        console.error("Erro ao conectar com API de persistência:", err);
-        // Em produção, não carregamos mocks se falhar
-        setCompanies([]);
-        setInvoices([]);
-        setIsDataLoaded(true);
-      });
+    // Adiciona um pequeno delay para garantir que o backend subiu
+    const timeout = setTimeout(() => {
+        fetch('/api/db')
+          .then(res => {
+            if (!res.ok) throw new Error('Falha ao carregar dados');
+            return res.json();
+          })
+          .then(data => {
+            if (data.companies) setCompanies(data.companies);
+            if (data.invoices) setInvoices(data.invoices);
+            setIsDataLoaded(true); // Só marca como carregado se DE FATO carregou
+            setIsError(false);
+            console.log('Dados carregados com sucesso de /app/data/db.json');
+          })
+          .catch(err => {
+            console.error("ERRO CRÍTICO: Não foi possível carregar o banco de dados.", err);
+            // IMPORTANTE: Não marcamos isDataLoaded=true aqui. 
+            // Isso impede que o useEffect de salvamento (abaixo) sobrescreva o banco com arrays vazios.
+            setIsError(true); 
+          });
+    }, 1000);
+
+    return () => clearTimeout(timeout);
   }, []);
 
   // 2. Salvar dados no servidor sempre que houver mudança
   useEffect(() => {
-    if (!isDataLoaded) return;
+    // BLOQUEIO DE SEGURANÇA: Se os dados não foram carregados corretamente, NUNCA salve.
+    if (!isDataLoaded || isError) return;
 
     const dbData = {
       companies,
@@ -58,13 +66,15 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       lastUpdated: new Date().toISOString()
     };
 
+    console.log("Persistindo dados em /app/data/db.json...");
+
     fetch('/api/db', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(dbData)
     }).catch(err => console.error("Erro ao salvar dados no disco:", err));
 
-  }, [companies, invoices, isDataLoaded]);
+  }, [companies, invoices, isDataLoaded, isError]);
 
   const addLog = (message: string, type: 'info' | 'success' | 'warning' | 'error' = 'info', details?: string) => {
     setLogs(prev => [...prev, {
@@ -266,7 +276,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       searchInvoices, 
       verifyCertificate,
       clearLogs,
-      isLoading
+      isLoading,
+      isError
     }}>
       {children}
     </AppContext.Provider>
