@@ -18,37 +18,55 @@ interface AppContextType {
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
 
-const DB_KEY = 'nfe_manager_db_v5';
-
 export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
-  const [companies, setCompanies] = useState<Company[]>(() => {
-    const saved = localStorage.getItem(DB_KEY);
-    if (saved) {
-      const parsed = JSON.parse(saved);
-      return parsed.companies.map((c: any) => ({
-        ...c,
-        lastNSU: c.lastNSU || '0'
-      }));
-    }
-    return MOCK_COMPANIES;
-  });
-
-  const [invoices, setInvoices] = useState<Invoice[]>(() => {
-    const saved = localStorage.getItem(DB_KEY);
-    return saved ? JSON.parse(saved).invoices : MOCK_INVOICES;
-  });
-
+  const [companies, setCompanies] = useState<Company[]>([]);
+  const [invoices, setInvoices] = useState<Invoice[]>([]);
   const [logs, setLogs] = useState<SystemLog[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+  
+  // Flag para indicar que os dados iniciais foram carregados do servidor
+  const [isDataLoaded, setIsDataLoaded] = useState(false);
 
+  // 1. Carregar dados do servidor (FileSystem) ao iniciar
   useEffect(() => {
+    fetch('/api/db')
+      .then(res => {
+        if (!res.ok) throw new Error('Falha ao carregar dados');
+        return res.json();
+      })
+      .then(data => {
+        if (data.companies) setCompanies(data.companies);
+        if (data.invoices) setInvoices(data.invoices);
+        setIsDataLoaded(true);
+        console.log('Dados carregados de /app/data/db.json');
+      })
+      .catch(err => {
+        console.error("Erro ao conectar com API de persistência:", err);
+        // Fallback apenas visual se falhar (ex: rodando sem backend configurado)
+        setCompanies(MOCK_COMPANIES);
+        setInvoices(MOCK_INVOICES);
+        setIsDataLoaded(true);
+      });
+  }, []);
+
+  // 2. Salvar dados no servidor sempre que houver mudança
+  useEffect(() => {
+    // Não salva se ainda não carregou para evitar sobrescrever o banco com array vazio
+    if (!isDataLoaded) return;
+
     const dbData = {
       companies,
       invoices,
       lastUpdated: new Date().toISOString()
     };
-    localStorage.setItem(DB_KEY, JSON.stringify(dbData));
-  }, [companies, invoices]);
+
+    fetch('/api/db', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(dbData)
+    }).catch(err => console.error("Erro ao salvar dados no disco:", err));
+
+  }, [companies, invoices, isDataLoaded]);
 
   const addLog = (message: string, type: 'info' | 'success' | 'warning' | 'error' = 'info', details?: string) => {
     setLogs(prev => [...prev, {
@@ -86,7 +104,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     addLog(`${ids.length} notas marcadas como baixadas (XML salvo em disco).`, 'success');
   };
 
-  // --- SIMULAÇÃO DO BACKEND ---
+  // --- SIMULAÇÃO DO BACKEND (Mantida a lógica de busca) ---
   const searchInvoices = async (companyId: string) => {
     setIsLoading(true);
     clearLogs(); // Limpa logs anteriores para nova execução
@@ -112,7 +130,6 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       await new Promise(r => setTimeout(r, 800));
 
       // LÓGICA DE VALIDAÇÃO DE SENHA (MOCK)
-      // Para fins de teste, vamos aceitar apenas a senha "123456"
       if (company.certificatePassword !== '123456') {
         throw new Error("OpenSSL Error: mac verify failure. Invalid password?");
       }
@@ -131,7 +148,6 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       await new Promise(r => setTimeout(r, 1500)); // Latência de rede
 
       // 6. Resposta da SEFAZ
-      // Sorteia se vai achar notas ou não para variar o teste
       const foundNewDocs = Math.random() > 0.3; 
       
       if (foundNewDocs) {
