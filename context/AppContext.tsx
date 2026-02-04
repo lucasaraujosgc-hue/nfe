@@ -103,11 +103,30 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const verifyCertificate = async (file: File | null, password: string): Promise<void> => {
-    if (!file && !password) return;
-    // Simulação de delay de processamento criptográfico local
-    await new Promise(r => setTimeout(r, 1000));
+    // 1. Upload do Arquivo para o Backend
+    if (file) {
+        const formData = new FormData();
+        formData.append('file', file);
+        
+        try {
+            console.log("Enviando certificado para o backend...");
+            const res = await fetch('/api/upload-cert', {
+                method: 'POST',
+                body: formData
+            });
+
+            if (!res.ok) {
+                const errText = await res.text();
+                throw new Error(`Erro ao salvar arquivo (${res.status}): ${errText}`);
+            }
+            console.log("Upload concluído.");
+        } catch (e: any) {
+            console.error(e);
+            throw new Error(`Falha no upload do certificado: ${e.message}`);
+        }
+    }
     
-    // Validação básica
+    // 2. Validação simples de input
     if (!password) {
         throw new Error("Senha é obrigatória.");
     }
@@ -156,13 +175,18 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       if (!response.ok) {
           let errorMsg = response.statusText;
           try {
-             // Tenta extrair a mensagem detalhada do corpo
-             const errorBody = await response.text();
-             if (errorBody) {
-                 // Remove aspas extras se for string JSON simples
-                 errorMsg = errorBody.replace(/^"|"$/g, '');
+             // Tenta extrair a mensagem detalhada (JSON Problem Details ou texto)
+             const textBody = await response.text();
+             try {
+                const jsonBody = JSON.parse(textBody);
+                // Se for ProblemDetails do ASP.NET
+                if (jsonBody.detail) errorMsg = jsonBody.detail;
+                else if (jsonBody.title) errorMsg = jsonBody.title;
+                else errorMsg = textBody;
+             } catch {
+                if (textBody) errorMsg = textBody.replace(/^"|"$/g, '');
              }
-          } catch (e) { /* ignore json parse error */ }
+          } catch (e) { /* ignore parse error */ }
 
           if (response.status === 404) {
               throw new Error("Rota do Backend não encontrada (404).");

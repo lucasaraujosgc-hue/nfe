@@ -5,6 +5,7 @@ using System.Text;
 using System.Xml.Linq;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
+using Microsoft.AspNetCore.Http; // Necessário para IFormFile
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -23,12 +24,48 @@ Console.WriteLine("=== NFe Manager Pro Backend Started ===");
 Console.WriteLine($"Environment: {app.Environment.EnvironmentName}");
 Console.WriteLine($"Listening on: http://0.0.0.0:5000");
 
+// --- CONFIGURAÇÃO DE DIRETÓRIOS (VOLUMES DOCKER) ---
+string BaseDataPath = "/app/data";
+string BaseCertPath = "/app/certificates";
+
+// Garantir que diretórios existam
+if (!Directory.Exists(BaseDataPath)) Directory.CreateDirectory(BaseDataPath);
+if (!Directory.Exists(BaseCertPath)) Directory.CreateDirectory(BaseCertPath);
+
+Console.WriteLine($"Database Path: {BaseDataPath}");
+Console.WriteLine($"Certificates Path: {BaseCertPath}");
+
 // --- ENDPOINTS ---
 
-// 1. Endpoint de Banco de Dados (Leitura/Escrita em Arquivo JSON)
-var dbPath = Path.Combine(Directory.GetCurrentDirectory(), "../data/db.json");
-if (!Directory.Exists(Path.GetDirectoryName(dbPath)))
-    Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
+// 1. Endpoint de Upload de Certificado
+app.MapPost("/api/upload-cert", async (IFormFile file) =>
+{
+    try 
+    {
+        if (file == null || file.Length == 0)
+            return Results.BadRequest("Nenhum arquivo enviado.");
+
+        var filePath = Path.Combine(BaseCertPath, file.FileName);
+        
+        Console.WriteLine($"Recebendo arquivo: {file.FileName} -> {filePath}");
+
+        using (var stream = new FileStream(filePath, FileMode.Create))
+        {
+            await file.CopyToAsync(stream);
+        }
+        
+        Console.WriteLine("Upload concluído com sucesso.");
+        return Results.Ok(new { message = "Upload realizado", path = filePath });
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"Erro no upload: {ex.Message}");
+        return Results.Problem($"Erro ao salvar arquivo: {ex.Message}");
+    }
+}).DisableAntiforgery();
+
+// 2. Endpoint de Banco de Dados (Leitura/Escrita em Arquivo JSON)
+var dbPath = Path.Combine(BaseDataPath, "db.json");
 
 app.MapGet("/api/db", async () =>
 {
@@ -45,7 +82,7 @@ app.MapPost("/api/db", async (HttpContext context) =>
     return Results.Ok(new { success = true });
 });
 
-// 2. Endpoint de Consulta SEFAZ (DistDFe)
+// 3. Endpoint de Consulta SEFAZ (DistDFe)
 app.MapPost("/api/sefaz/dist-dfe", async (HttpContext context) =>
 {
     Console.WriteLine($"[{DateTime.Now}] Received request for /api/sefaz/dist-dfe");
@@ -71,17 +108,13 @@ app.MapPost("/api/sefaz/dist-dfe", async (HttpContext context) =>
 
         string certName = company["certificateName"]?.ToString() ?? "";
         
-        // Caminho do Certificado
-        var certPath = Path.Combine(Directory.GetCurrentDirectory(), "../certificates", certName);
+        // Caminho do Certificado (Usa caminho absoluto configurado)
+        var certPath = Path.Combine(BaseCertPath, certName);
         
         if (!File.Exists(certPath))
         {
-             // Tenta fallback para pasta local
-            certPath = Path.Combine(Directory.GetCurrentDirectory(), "certificates", certName);
-            if (!File.Exists(certPath)) {
-                Console.WriteLine($"Error: Certificate not found at {certPath}");
-                return Results.BadRequest($"Certificado não encontrado no servidor. Esperado em: certificates/{certName}");
-            }
+            Console.WriteLine($"Error: Certificate not found at {certPath}");
+            return Results.BadRequest($"Certificado não encontrado no servidor em: {certPath}. Faça o upload novamente.");
         }
 
         Console.WriteLine($"Loading Certificate: {certPath}");
@@ -91,12 +124,12 @@ app.MapPost("/api/sefaz/dist-dfe", async (HttpContext context) =>
         // 1. Carregar Certificado
         X509Certificate2 certificate;
         try {
-             // Flags adicionadas para compatibilidade com Linux/Docker e evitar problemas de KeySet
+             // Flags para compatibilidade Linux/Docker
              certificate = new X509Certificate2(certPath, password, 
                 X509KeyStorageFlags.MachineKeySet | X509KeyStorageFlags.PersistKeySet | X509KeyStorageFlags.Exportable);
         } catch (System.Security.Cryptography.CryptographicException ce) {
              Console.WriteLine($"Crypto Error: {ce.Message}");
-             return Results.BadRequest($"Falha ao abrir certificado. Senha incorreta ou arquivo corrompido. Erro: {ce.Message}");
+             return Results.BadRequest($"Falha ao abrir certificado (Senha incorreta?): {ce.Message}");
         }
 
         // 2. Montar Envelope SOAP
@@ -111,7 +144,6 @@ app.MapPost("/api/sefaz/dist-dfe", async (HttpContext context) =>
         // 3. Configurar Cliente HTTP com SSL Mútuo
         var handler = new HttpClientHandler();
         handler.ClientCertificates.Add(certificate);
-        // Ignorar erros de cadeia de certificado da SEFAZ (comum em ambientes de dev sem cadeias ICP-Brasil instaladas)
         handler.ServerCertificateCustomValidationCallback = (message, cert, chain, errors) => true; 
 
         using var client = new HttpClient(handler);
@@ -232,7 +264,8 @@ app.MapPost("/api/sefaz/dist-dfe", async (HttpContext context) =>
     catch (Exception ex)
     {
         Console.WriteLine($"EXCEPTION: {ex.ToString()}");
-        return Results.Problem($"Erro interno no backend: {ex.Message}");
+        // Retorna JSON problem detail padrão
+        return Results.Problem($"Erro Interno: {ex.Message}");
     }
 });
 
