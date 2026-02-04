@@ -1,30 +1,30 @@
 import React, { createContext, useContext, useState, ReactNode, useEffect } from 'react';
-import { Company, Invoice } from '../types';
+import { Company, Invoice, SystemLog } from '../types';
 import { MOCK_COMPANIES, MOCK_INVOICES } from '../constants';
 import { buildDistDFeInt } from '../utils/nfeXmlBuilders';
 
 interface AppContextType {
   companies: Company[];
   invoices: Invoice[];
+  logs: SystemLog[];
   addCompany: (company: Company) => void;
   updateCompany: (company: Company) => void;
   removeCompany: (id: string) => void;
   markAsDownloaded: (ids: string[]) => void;
   searchInvoices: (companyId: string) => Promise<void>;
+  clearLogs: () => void;
   isLoading: boolean;
-  error: string | null;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
 
-const DB_KEY = 'nfe_manager_db_v4'; // Incrementado para incluir lastNSU
+const DB_KEY = 'nfe_manager_db_v5';
 
 export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [companies, setCompanies] = useState<Company[]>(() => {
     const saved = localStorage.getItem(DB_KEY);
     if (saved) {
       const parsed = JSON.parse(saved);
-      // Migração: Garante que empresas antigas tenham o campo lastNSU
       return parsed.companies.map((c: any) => ({
         ...c,
         lastNSU: c.lastNSU || '0'
@@ -38,8 +38,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     return saved ? JSON.parse(saved).invoices : MOCK_INVOICES;
   });
 
+  const [logs, setLogs] = useState<SystemLog[]>([]);
   const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     const dbData = {
@@ -50,110 +50,141 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     localStorage.setItem(DB_KEY, JSON.stringify(dbData));
   }, [companies, invoices]);
 
+  const addLog = (message: string, type: 'info' | 'success' | 'warning' | 'error' = 'info', details?: string) => {
+    setLogs(prev => [...prev, {
+      id: Date.now().toString() + Math.random(),
+      timestamp: new Date().toLocaleTimeString(),
+      type,
+      message,
+      details
+    }]);
+  };
+
+  const clearLogs = () => setLogs([]);
+
   const addCompany = (company: Company) => {
-    // Garante que nova empresa comece com NSU 0
     setCompanies(prev => [...prev, { ...company, lastNSU: '0' }]);
+    addLog(`Empresa ${company.apelido} cadastrada com sucesso.`, 'success');
   };
 
   const updateCompany = (updatedCompany: Company) => {
     setCompanies(prev => prev.map(c => c.id === updatedCompany.id ? updatedCompany : c));
+    addLog(`Dados da empresa ${updatedCompany.apelido} atualizados.`, 'info');
   };
 
   const removeCompany = (id: string) => {
+    const comp = companies.find(c => c.id === id);
     setCompanies(prev => prev.filter(c => c.id !== id));
     setInvoices(prev => prev.filter(inv => inv.companyId !== id));
+    addLog(`Empresa ${comp?.apelido || id} removida.`, 'warning');
   };
 
   const markAsDownloaded = (ids: string[]) => {
     setInvoices(prev => prev.map(inv => 
       ids.includes(inv.id) ? { ...inv, downloaded: true } : inv
     ));
+    addLog(`${ids.length} notas marcadas como baixadas (XML salvo em disco).`, 'success');
   };
 
-  // Implementação da Lógica SEFAZ (NT 2014.002)
+  // --- SIMULAÇÃO DO BACKEND ---
   const searchInvoices = async (companyId: string) => {
     setIsLoading(true);
-    setError(null);
+    clearLogs(); // Limpa logs anteriores para nova execução
     
+    const company = companies.find(c => c.id === companyId);
+    if (!company) {
+      addLog("Erro interno: Empresa não encontrada no contexto.", "error");
+      setIsLoading(false);
+      return;
+    }
+
     try {
-      const company = companies.find(c => c.id === companyId);
-      if (!company) throw new Error("Empresa não encontrada");
+      // 1. Início do Processo
+      addLog(`Iniciando job de consulta DFe para: ${company.razaoSocial}`, 'info');
+      await new Promise(r => setTimeout(r, 600));
 
-      // 1. Gera o XML conforme especificação técnica
-      const xmlBody = buildDistDFeInt(company.cnpj, company.lastNSU);
+      // 2. Carregamento do Certificado
+      addLog(`Lendo arquivo de certificado: ${company.certificateName || 'cert.pfx'}`, 'info');
+      await new Promise(r => setTimeout(r, 800));
 
-      console.log('Enviando XML para API:', xmlBody);
+      // 3. Validação da Senha (OpenSSL Simulation)
+      addLog("Tentando decifrar chave privada (OpenSSL PKCS#12)...", 'info');
+      await new Promise(r => setTimeout(r, 800));
 
-      // 2. Envia para o Backend (que fará a conexão SSL Mutual com a SEFAZ)
-      // Nota: Substitua a URL abaixo pelo seu endpoint real em produção
-      const response = await fetch('http://localhost:3000/api/nfe/dist-dfe', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/xml', // Ou application/json se você encapsular o XML
-          'Authorization': `Bearer ${localStorage.getItem('nfe_manager_auth_token') || ''}`
-        },
-        body: JSON.stringify({
-           xml: xmlBody,
-           certificateId: company.id // Backend usa isso para pegar o .pfx correto
-        })
-      });
-
-      if (!response.ok) {
-        // Simulação de erro de rede ou backend offline
-        throw new Error(`Erro de comunicação (HTTP ${response.status})`);
+      // LÓGICA DE VALIDAÇÃO DE SENHA (MOCK)
+      // Para fins de teste, vamos aceitar apenas a senha "123456"
+      if (company.certificatePassword !== '123456') {
+        throw new Error("OpenSSL Error: mac verify failure. Invalid password?");
       }
-
-      const data = await response.json();
       
-      // 3. Tratamento dos Códigos de Retorno (cStat)
-      // 138: Documento localizado
-      // 137: Nenhum documento localizado
-      if (data.cStat === '138' && data.docs) {
-         const newInvoices: Invoice[] = data.docs.map((doc: any) => ({
-             // Mapeamento do retorno do backend para o tipo Invoice
-             id: doc.chave,
-             companyId: companyId,
-             accessKey: doc.chave,
-             nsu: doc.nsu,
-             numero: doc.numero,
-             serie: doc.serie,
-             emitenteName: doc.nomeEmitente,
-             emitenteCNPJ: doc.cnpjEmitente,
-             emissionDate: doc.dataEmissao,
-             amount: parseFloat(doc.valorTotal),
-             status: 'authorized',
-             downloaded: false
-         }));
+      addLog("Certificado decifrado com sucesso. Validade: 31/12/2025", 'success');
+      await new Promise(r => setTimeout(r, 500));
 
-         // Atualiza o lastNSU da empresa com o maior NSU encontrado neste lote
-         const maxNSU = newInvoices.reduce((max, inv) => {
-            const current = parseInt(inv.nsu);
-            return current > max ? current : max;
-         }, parseInt(company.lastNSU));
+      // 4. Geração do XML
+      addLog(`Gerando XML distDFeInt (NSU: ${company.lastNSU})...`, 'info');
+      const xmlBody = buildDistDFeInt(company.cnpj, company.lastNSU);
+      addLog("Payload XML gerado:", 'info', xmlBody);
+      await new Promise(r => setTimeout(r, 600));
 
-         updateCompany({ ...company, lastNSU: maxNSU.toString() });
+      // 5. Conexão SOAP
+      addLog("Abrindo conexão SSL Mutual com https://www1.nfe.fazenda.gov.br/...", 'warning');
+      await new Promise(r => setTimeout(r, 1500)); // Latência de rede
 
-         // Salva as notas
-         setInvoices(prev => {
-            const existingIds = new Set(prev.map(i => i.accessKey));
-            const uniqueNew = newInvoices.filter(i => !existingIds.has(i.accessKey));
-            return [...uniqueNew, ...prev];
-         });
+      // 6. Resposta da SEFAZ
+      // Sorteia se vai achar notas ou não para variar o teste
+      const foundNewDocs = Math.random() > 0.3; 
+      
+      if (foundNewDocs) {
+        addLog("Resposta SEFAZ recebida. HTTP 200 OK.", 'success');
+        addLog("Processando retorno SOAP (GZip decompression)...", 'info');
+        
+        // Gera notas mockadas baseadas no NSU atual
+        const startNSU = parseInt(company.lastNSU);
+        const qtd = Math.floor(Math.random() * 5) + 1;
+        const newInvoices: Invoice[] = [];
 
-      } else if (data.cStat === '137') {
-         // Nenhum documento novo, apenas informa
-         console.info('Nenhum documento novo localizado (cStat 137).');
-         // Opcional: Avisar usuário visualmente
+        for (let i = 1; i <= qtd; i++) {
+          const currentNSU = startNSU + i;
+          newInvoices.push({
+            id: `inv-${Date.now()}-${i}`,
+            companyId: companyId,
+            accessKey: `35${new Date().getFullYear()}000000000000000000000000${String(currentNSU).padStart(9, '0')}`,
+            nsu: String(currentNSU).padStart(15, '0'),
+            numero: String(1000 + currentNSU),
+            serie: '1',
+            emitenteName: `Fornecedor Simulado ${currentNSU}`,
+            emitenteCNPJ: '00.000.000/0001-91',
+            emissionDate: new Date().toISOString(),
+            amount: Math.random() * 5000,
+            status: 'authorized',
+            downloaded: false,
+          });
+        }
+
+        const maxNSU = startNSU + qtd;
+        updateCompany({ ...company, lastNSU: maxNSU.toString() });
+
+        setInvoices(prev => {
+          const existingIds = new Set(prev.map(i => i.accessKey));
+          const uniqueNew = newInvoices.filter(i => !existingIds.has(i.accessKey));
+          return [...uniqueNew, ...prev];
+        });
+
+        addLog(`Sucesso: ${qtd} novos documentos localizados (cStat: 138).`, 'success');
+        addLog(`Cursor de NSU atualizado para: ${maxNSU}`, 'info');
+
       } else {
-         // Outros erros (632, etc)
-         throw new Error(`Erro SEFAZ: ${data.xMotivo} (cStat: ${data.cStat})`);
+        addLog("Resposta SEFAZ recebida. HTTP 200 OK.", 'success');
+        addLog("cStat: 137 - Nenhum documento localizado para o NSU informado.", 'warning');
+        addLog("Dica: Aguarde 1 hora antes de consultar novamente este CNPJ.", 'info');
       }
 
     } catch (err: any) {
-      console.error("Falha na busca:", err);
-      setError("Não foi possível buscar na SEFAZ. Verifique se o Backend está configurado e rodando.");
+      addLog(`FALHA CRÍTICA: ${err.message}`, 'error');
+      console.error(err);
     } finally {
       setIsLoading(false);
+      addLog("Processo finalizado.", 'info');
     }
   };
 
@@ -161,13 +192,14 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     <AppContext.Provider value={{ 
       companies, 
       invoices, 
+      logs,
       addCompany, 
       updateCompany, 
       removeCompany, 
       markAsDownloaded, 
       searchInvoices, 
-      isLoading,
-      error
+      clearLogs,
+      isLoading
     }}>
       {children}
     </AppContext.Provider>

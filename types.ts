@@ -5,6 +5,7 @@ export interface Company {
   apelido: string;
   certificateName?: string;
   certificateExpiry?: string;
+  certificatePassword?: string; // Armazenado apenas para simulação do Backend
   lastNSU: string; // Controle do último NSU consultado (Max 15 dígitos)
 }
 
@@ -28,3 +29,11 @@ export type InvoiceFilter = {
   startDate: string;
   endDate: string;
 };
+
+export interface SystemLog {
+  id: string;
+  timestamp: string;
+  type: 'info' | 'success' | 'warning' | 'error';
+  message: string;
+  details?: string;
+}

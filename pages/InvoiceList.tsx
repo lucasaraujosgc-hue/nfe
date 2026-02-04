@@ -1,10 +1,10 @@
-import React, { useState, useMemo } from 'react';
-import { Download, RefreshCw, FileCheck, Search, Filter, Copy, Check } from 'lucide-react';
+import React, { useState, useMemo, useRef, useEffect } from 'react';
+import { Download, RefreshCw, FileCheck, Search, Filter, Copy, Check, Terminal, XCircle, AlertTriangle, Info, ChevronDown, ChevronUp } from 'lucide-react';
 import { useAppContext } from '../context/AppContext';
 import { formatCurrency, formatDate, formatAccessKey } from '../utils';
 
 export const InvoiceList: React.FC = () => {
-  const { companies, invoices, isLoading, searchInvoices, markAsDownloaded } = useAppContext();
+  const { companies, invoices, isLoading, searchInvoices, markAsDownloaded, logs } = useAppContext();
   
   const [selectedCompany, setSelectedCompany] = useState<string>(companies[0]?.id || '');
   const [startDate, setStartDate] = useState('');
@@ -12,6 +12,16 @@ export const InvoiceList: React.FC = () => {
   const [selectedInvoices, setSelectedInvoices] = useState<Set<string>>(new Set());
   const [isProcessing, setIsProcessing] = useState(false);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
+  const [showTerminal, setShowTerminal] = useState(true);
+  
+  const logsEndRef = useRef<HTMLDivElement>(null);
+
+  // Auto-scroll logs
+  useEffect(() => {
+    if (logsEndRef.current && showTerminal) {
+      logsEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [logs, showTerminal]);
 
   // Filter invoices based on selection
   const filteredInvoices = useMemo(() => {
@@ -30,6 +40,7 @@ export const InvoiceList: React.FC = () => {
 
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
+    setShowTerminal(true);
     searchInvoices(selectedCompany);
   };
 
@@ -71,7 +82,7 @@ export const InvoiceList: React.FC = () => {
   };
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 pb-20">
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
           <h2 className="text-2xl font-bold text-gray-900">Consulta de Notas</h2>
@@ -131,7 +142,7 @@ export const InvoiceList: React.FC = () => {
             >
               {isLoading ? (
                 <>
-                  <RefreshCw className="w-4 h-4 animate-spin" /> Buscando...
+                  <RefreshCw className="w-4 h-4 animate-spin" /> Processando...
                 </>
               ) : (
                 <>
@@ -141,6 +152,50 @@ export const InvoiceList: React.FC = () => {
             </button>
           </div>
         </form>
+      </div>
+
+      {/* Terminal de Logs (Visualização do Backend) */}
+      <div className={`fixed bottom-0 left-64 right-0 bg-[#1e1e1e] text-gray-300 shadow-2xl transition-all duration-300 z-30 border-t border-gray-700 ${showTerminal ? 'h-64' : 'h-10'}`}>
+         <div 
+            className="flex items-center justify-between px-4 py-2 bg-[#2d2d2d] cursor-pointer hover:bg-[#3d3d3d] transition-colors"
+            onClick={() => setShowTerminal(!showTerminal)}
+         >
+            <div className="flex items-center gap-2">
+                <Terminal className="w-4 h-4 text-green-500" />
+                <span className="text-xs font-mono font-bold text-white">SERVIDOR BACKEND - LOGS DE EXECUÇÃO</span>
+                {isLoading && <span className="text-[10px] bg-blue-600 text-white px-2 rounded-full animate-pulse">EXECUTANDO</span>}
+            </div>
+            {showTerminal ? <ChevronDown className="w-4 h-4" /> : <ChevronUp className="w-4 h-4" />}
+         </div>
+         
+         {showTerminal && (
+             <div className="p-4 font-mono text-xs overflow-y-auto h-[calc(100%-40px)] space-y-2">
+                 {logs.length === 0 && (
+                    <div className="text-gray-500 italic">Aguardando início do processo...</div>
+                 )}
+                 {logs.map((log) => (
+                    <div key={log.id} className="flex gap-3 animate-in fade-in slide-in-from-left-2 duration-300">
+                        <span className="text-gray-500 select-none">[{log.timestamp}]</span>
+                        <div className="flex-1">
+                            <span className={`font-bold ${
+                                log.type === 'error' ? 'text-red-500' : 
+                                log.type === 'success' ? 'text-green-500' : 
+                                log.type === 'warning' ? 'text-yellow-500' : 'text-blue-400'
+                            }`}>
+                                {log.type.toUpperCase()}:
+                            </span>
+                            <span className="ml-2 text-gray-200">{log.message}</span>
+                            {log.details && (
+                                <pre className="mt-1 p-2 bg-black/30 rounded text-gray-400 border-l-2 border-gray-600 overflow-x-auto">
+                                    {log.details}
+                                </pre>
+                            )}
+                        </div>
+                    </div>
+                 ))}
+                 <div ref={logsEndRef} />
+             </div>
+         )}
       </div>
 
       {/* Action Bar */}
@@ -163,7 +218,7 @@ export const InvoiceList: React.FC = () => {
       </div>
 
       {/* Data Table */}
-      <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+      <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden mb-8">
         <div className="overflow-x-auto">
           <table className="w-full text-sm text-left">
             <thead className="bg-gray-50 text-gray-600 font-medium border-b border-gray-200">
