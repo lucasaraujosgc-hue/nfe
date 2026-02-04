@@ -116,8 +116,24 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
             });
 
             if (!res.ok) {
-                const errText = await res.text();
-                throw new Error(`Erro ao salvar arquivo (${res.status}): ${errText}`);
+                let errorDetails = res.statusText;
+                try {
+                    // Tenta ler como JSON (ProblemDetails do .NET)
+                    const jsonError = await res.json();
+                    if (jsonError.detail) errorDetails = jsonError.detail;
+                    else if (jsonError.title) errorDetails = jsonError.title;
+                    else if (jsonError.message) errorDetails = jsonError.message;
+                } catch (e) {
+                    // Fallback para texto plano se não for JSON
+                    try { errorDetails = await res.text(); } catch {}
+                }
+                
+                // Limpeza de string caso venha com aspas extras
+                if (typeof errorDetails === 'string') {
+                    errorDetails = errorDetails.replace(/^"|"$/g, '');
+                }
+                
+                throw new Error(`Servidor: ${errorDetails} (Cod: ${res.status})`);
             }
             console.log("Upload concluído.");
         } catch (e: any) {

@@ -29,25 +29,41 @@ string BaseDataPath = "/app/data";
 string BaseCertPath = "/app/certificates";
 
 // Garantir que diretórios existam
-if (!Directory.Exists(BaseDataPath)) Directory.CreateDirectory(BaseDataPath);
-if (!Directory.Exists(BaseCertPath)) Directory.CreateDirectory(BaseCertPath);
+try {
+    if (!Directory.Exists(BaseDataPath)) Directory.CreateDirectory(BaseDataPath);
+    if (!Directory.Exists(BaseCertPath)) Directory.CreateDirectory(BaseCertPath);
+} catch (Exception ex) {
+    Console.WriteLine($"FATAL: Failed to create directories: {ex.Message}");
+}
 
 Console.WriteLine($"Database Path: {BaseDataPath}");
 Console.WriteLine($"Certificates Path: {BaseCertPath}");
 
 // --- ENDPOINTS ---
 
-// 1. Endpoint de Upload de Certificado
-app.MapPost("/api/upload-cert", async (IFormFile file) =>
+// 1. Endpoint de Upload de Certificado (Refatorado para robustez)
+app.MapPost("/api/upload-cert", async (HttpContext context) =>
 {
     try 
     {
-        if (file == null || file.Length == 0)
-            return Results.BadRequest("Nenhum arquivo enviado.");
+        if (!context.Request.HasFormContentType)
+            return Results.BadRequest("Content-Type inválido. Esperado multipart/form-data.");
 
-        var filePath = Path.Combine(BaseCertPath, file.FileName);
+        var form = await context.Request.ReadFormAsync();
+        var file = form.Files["file"]; // O nome do campo no Frontend deve ser 'file'
+
+        if (file == null || file.Length == 0)
+            return Results.BadRequest("Nenhum arquivo encontrado no campo 'file'.");
+
+        // Sanitizar nome do arquivo (segurança e compatibilidade)
+        var fileName = Path.GetFileName(file.FileName);
+        var safeFileName = fileName.Replace(" ", "_");
+        var filePath = Path.Combine(BaseCertPath, safeFileName);
         
-        Console.WriteLine($"Recebendo arquivo: {file.FileName} -> {filePath}");
+        Console.WriteLine($"Recebendo arquivo: {fileName} -> {filePath}");
+
+        // Deletar se já existir para substituir
+        if (File.Exists(filePath)) File.Delete(filePath);
 
         using (var stream = new FileStream(filePath, FileMode.Create))
         {
@@ -55,12 +71,18 @@ app.MapPost("/api/upload-cert", async (IFormFile file) =>
         }
         
         Console.WriteLine("Upload concluído com sucesso.");
-        return Results.Ok(new { message = "Upload realizado", path = filePath });
+        // Retorna o nome do arquivo salvo para o frontend atualizar o estado se necessário
+        return Results.Ok(new { message = "Upload realizado", filename = safeFileName, path = filePath });
+    }
+    catch (UnauthorizedAccessException uex)
+    {
+        Console.WriteLine($"ERRO PERMISSÃO: {uex.Message}");
+        return Results.Problem($"Permissão negada ao salvar em {BaseCertPath}. Verifique os volumes do Docker.");
     }
     catch (Exception ex)
     {
-        Console.WriteLine($"Erro no upload: {ex.Message}");
-        return Results.Problem($"Erro ao salvar arquivo: {ex.Message}");
+        Console.WriteLine($"ERRO UPLOAD: {ex.ToString()}");
+        return Results.Problem($"Erro interno ao salvar arquivo: {ex.Message}");
     }
 }).DisableAntiforgery();
 
@@ -110,6 +132,13 @@ app.MapPost("/api/sefaz/dist-dfe", async (HttpContext context) =>
         
         // Caminho do Certificado (Usa caminho absoluto configurado)
         var certPath = Path.Combine(BaseCertPath, certName);
+        
+        // Se o nome no banco tiver espaços e salvamos com _, tentamos o fallback
+        if (!File.Exists(certPath))
+        {
+            var altPath = Path.Combine(BaseCertPath, certName.Replace(" ", "_"));
+            if (File.Exists(altPath)) certPath = altPath;
+        }
         
         if (!File.Exists(certPath))
         {
