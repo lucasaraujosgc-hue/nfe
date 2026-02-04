@@ -22,12 +22,28 @@ app.UseCors("AllowAll");
 
 Console.WriteLine("=== NFe Manager Pro Backend Started ===");
 Console.WriteLine($"Environment: {app.Environment.EnvironmentName}");
-Console.WriteLine($"Listening on: http://0.0.0.0:5000");
 
-// --- CONFIGURAÇÃO DE DIRETÓRIOS (VOLUMES DOCKER) ---
-// Estes caminhos DEVEM coincidir com o que foi montado no Docker
-string BaseDataPath = "/app/data";
-string BaseCertPath = "/app/certificates";
+// --- CONFIGURAÇÃO DE DIRETÓRIOS ---
+// Lógica robusta para determinar diretórios de dados
+string BaseDataPath;
+string BaseCertPath;
+
+// Verifica se estamos no ambiente Docker padrão (/app)
+bool isDocker = Directory.Exists("/app");
+
+if (isDocker)
+{
+    BaseDataPath = "/app/data";
+    BaseCertPath = "/app/certificates";
+}
+else
+{
+    // Fallback para desenvolvimento local (Windows/Mac/Linux sem Docker)
+    var currentDir = Directory.GetCurrentDirectory();
+    BaseDataPath = Path.Combine(currentDir, "local_storage", "data");
+    BaseCertPath = Path.Combine(currentDir, "local_storage", "certificates");
+    Console.WriteLine($"[INFO] Rodando fora do Docker. Usando caminhos locais: {BaseDataPath}");
+}
 
 // Inicialização: Tentar criar diretórios e listar conteúdo para debug
 try {
@@ -35,24 +51,25 @@ try {
         Console.WriteLine($"Creating directory: {BaseDataPath}");
         Directory.CreateDirectory(BaseDataPath);
     } else {
-        Console.WriteLine($"Directory exists: {BaseDataPath}. Files found:");
-        foreach(var f in Directory.GetFiles(BaseDataPath)) Console.WriteLine($" - {Path.GetFileName(f)}");
+        Console.WriteLine($"Directory exists: {BaseDataPath}");
     }
 
     if (!Directory.Exists(BaseCertPath)) {
         Console.WriteLine($"Creating directory: {BaseCertPath}");
         Directory.CreateDirectory(BaseCertPath);
     } else {
-        Console.WriteLine($"Directory exists: {BaseCertPath}. Files found:");
-        foreach(var f in Directory.GetFiles(BaseCertPath)) Console.WriteLine($" - {Path.GetFileName(f)}");
+        Console.WriteLine($"Directory exists: {BaseCertPath}");
     }
 } catch (Exception ex) {
     Console.WriteLine($"FATAL: Failed to access/create directories: {ex.Message}");
+    // Se falhar a criação de diretórios, o app não deve rodar corretamente, mas evitamos crash total
 }
+
+Console.WriteLine($"Listening on: http://0.0.0.0:5000");
 
 // --- ENDPOINTS ---
 
-// 1. Endpoint de Upload de Certificado (Refatorado para robustez)
+// 1. Endpoint de Upload de Certificado
 app.MapPost("/api/upload-cert", async (HttpContext context) =>
 {
     try 
@@ -61,19 +78,19 @@ app.MapPost("/api/upload-cert", async (HttpContext context) =>
             return Results.BadRequest("Content-Type inválido. Esperado multipart/form-data.");
 
         var form = await context.Request.ReadFormAsync();
-        var file = form.Files["file"]; // O nome do campo no Frontend deve ser 'file'
+        var file = form.Files["file"]; 
 
         if (file == null || file.Length == 0)
             return Results.BadRequest("Nenhum arquivo encontrado no campo 'file'.");
 
-        // Sanitizar nome do arquivo (segurança e compatibilidade)
+        // Sanitizar nome do arquivo
         var fileName = Path.GetFileName(file.FileName);
         var safeFileName = fileName.Replace(" ", "_");
         var filePath = Path.Combine(BaseCertPath, safeFileName);
         
         Console.WriteLine($"Recebendo arquivo: {fileName} -> {filePath}");
 
-        // Garantir diretório (caso volume tenha montado vazio)
+        // Garantir diretório (caso volume tenha montado vazio ou deletado)
         if (!Directory.Exists(BaseCertPath)) Directory.CreateDirectory(BaseCertPath);
 
         // Deletar se já existir para substituir
@@ -85,13 +102,12 @@ app.MapPost("/api/upload-cert", async (HttpContext context) =>
         }
         
         Console.WriteLine("Upload concluído com sucesso.");
-        // Retorna o nome do arquivo salvo para o frontend atualizar o estado se necessário
         return Results.Ok(new { message = "Upload realizado", filename = safeFileName, path = filePath });
     }
     catch (UnauthorizedAccessException uex)
     {
         Console.WriteLine($"ERRO PERMISSÃO: {uex.Message}");
-        return Results.Problem($"Permissão negada ao salvar em {BaseCertPath}. Verifique os volumes do Docker.");
+        return Results.Problem($"Permissão negada ao salvar em {BaseCertPath}. Tente rodar como Admin ou verifique permissões da pasta.");
     }
     catch (Exception ex)
     {
@@ -100,7 +116,7 @@ app.MapPost("/api/upload-cert", async (HttpContext context) =>
     }
 }).DisableAntiforgery();
 
-// 2. Endpoint de Banco de Dados (Leitura/Escrita em Arquivo JSON)
+// 2. Endpoint de Banco de Dados
 var dbPath = Path.Combine(BaseDataPath, "db.json");
 
 app.MapGet("/api/db", async () =>
@@ -119,10 +135,8 @@ app.MapPost("/api/db", async (HttpContext context) =>
         using var reader = new StreamReader(context.Request.Body);
         var body = await reader.ReadToEndAsync();
         
-        // Garantir diretório (segurança extra)
         if (!Directory.Exists(BaseDataPath)) Directory.CreateDirectory(BaseDataPath);
         
-        // Validar JSON e re-formatar para ficar legível no disco (Indented)
         var parsed = JsonConvert.DeserializeObject(body);
         var indented = JsonConvert.SerializeObject(parsed, Formatting.Indented);
 
@@ -141,7 +155,6 @@ app.MapPost("/api/sefaz/dist-dfe", async (HttpContext context) =>
     Console.WriteLine($"[{DateTime.Now}] Received request for /api/sefaz/dist-dfe");
     try
     {
-        // Ler payload do Frontend
         var requestBody = await new StreamReader(context.Request.Body).ReadToEndAsync();
         var json = JObject.Parse(requestBody);
         
@@ -151,7 +164,6 @@ app.MapPost("/api/sefaz/dist-dfe", async (HttpContext context) =>
 
         if (string.IsNullOrEmpty(companyId)) return Results.BadRequest("X-Company-ID header missing");
 
-        // Buscar nome do certificado no DB
         if (!File.Exists(dbPath)) return Results.NotFound("Database not found");
         var dbContent = await File.ReadAllTextAsync(dbPath);
         var dbJson = JObject.Parse(dbContent);
@@ -161,10 +173,8 @@ app.MapPost("/api/sefaz/dist-dfe", async (HttpContext context) =>
 
         string certName = company["certificateName"]?.ToString() ?? "";
         
-        // Caminho do Certificado (Usa caminho absoluto configurado)
         var certPath = Path.Combine(BaseCertPath, certName);
         
-        // Se o nome no banco tiver espaços e salvamos com _, tentamos o fallback
         if (!File.Exists(certPath))
         {
             var altPath = Path.Combine(BaseCertPath, certName.Replace(" ", "_"));
@@ -179,14 +189,10 @@ app.MapPost("/api/sefaz/dist-dfe", async (HttpContext context) =>
 
         Console.WriteLine($"Loading Certificate: {certPath}");
 
-        // --- LÓGICA DE CONEXÃO COM A SEFAZ ---
-
-        // 1. Carregar Certificado (Estratégia Híbrida para Docker/Linux/Windows)
         X509Certificate2 certificate;
         try 
         {
-             // Tentativa 1: EphemeralKeySet (Ideal para Docker/Linux para evitar erro de permissão em keyset)
-             // Funciona melhor quando não precisamos persistir a chave privada no store do usuário/máquina
+             // Tenta carregar sem persistência de chave (bom para Docker/Linux)
              certificate = new X509Certificate2(certPath, password, X509KeyStorageFlags.EphemeralKeySet);
         } 
         catch 
@@ -194,7 +200,7 @@ app.MapPost("/api/sefaz/dist-dfe", async (HttpContext context) =>
              Console.WriteLine("Fallback: EphemeralKeySet failed, trying default flags...");
              try 
              {
-                 // Tentativa 2: Flags completas (Compatibilidade legada)
+                 // Fallback para Windows/IIS
                  certificate = new X509Certificate2(certPath, password, 
                     X509KeyStorageFlags.MachineKeySet | X509KeyStorageFlags.PersistKeySet | X509KeyStorageFlags.Exportable);
              } 
@@ -205,7 +211,6 @@ app.MapPost("/api/sefaz/dist-dfe", async (HttpContext context) =>
              }
         }
 
-        // 2. Montar Envelope SOAP
         var soapEnvelope = $@"<soap12:Envelope xmlns:xsi=""http://www.w3.org/2001/XMLSchema-instance"" xmlns:xsd=""http://www.w3.org/2001/XMLSchema"" xmlns:soap12=""http://www.w3.org/2003/05/soap-envelope"">
             <soap12:Body>
                 <nfeDistDFeInteresse xmlns=""http://www.portalfiscal.inf.br/nfe"">
@@ -214,7 +219,6 @@ app.MapPost("/api/sefaz/dist-dfe", async (HttpContext context) =>
             </soap12:Body>
         </soap12:Envelope>";
 
-        // 3. Configurar Cliente HTTP com SSL Mútuo
         var handler = new HttpClientHandler();
         handler.ClientCertificates.Add(certificate);
         handler.ServerCertificateCustomValidationCallback = (message, cert, chain, errors) => true; 
@@ -228,7 +232,6 @@ app.MapPost("/api/sefaz/dist-dfe", async (HttpContext context) =>
         
         var content = new StringContent(soapEnvelope, Encoding.UTF8, "application/soap+xml");
 
-        // 4. Enviar Requisição
         var response = await client.PostAsync(url, content);
         var responseXmlStr = await response.Content.ReadAsStringAsync();
 
@@ -240,7 +243,6 @@ app.MapPost("/api/sefaz/dist-dfe", async (HttpContext context) =>
 
         Console.WriteLine("SEFAZ Response received. Parsing...");
 
-        // 5. Processar Retorno XML
         var doc = XDocument.Parse(responseXmlStr);
         XNamespace nsSoap = "http://www.w3.org/2003/05/soap-envelope";
         XNamespace nsNfe = "http://www.portalfiscal.inf.br/nfe";
@@ -260,7 +262,7 @@ app.MapPost("/api/sefaz/dist-dfe", async (HttpContext context) =>
 
         var processedInvoices = new List<object>();
 
-        if (cStat == "138") // Documentos localizados
+        if (cStat == "138") 
         {
             var lote = retDistDFeInt.Element(nsNfe + "loteDistDFeInt");
             if (lote != null)
@@ -271,7 +273,6 @@ app.MapPost("/api/sefaz/dist-dfe", async (HttpContext context) =>
                     var schema = docZip.Attribute("schema")?.Value;
                     var base64Content = docZip.Value;
 
-                    // Descompactar GZIP
                     var xmlContent = DecompressGZip(base64Content);
                     var docXml = XDocument.Parse(xmlContent);
 
@@ -325,19 +326,11 @@ app.MapPost("/api/sefaz/dist-dfe", async (HttpContext context) =>
             }
         }
 
-        return Results.Ok(new
-        {
-            cStat,
-            xMotivo,
-            maxNSU,
-            invoices = processedInvoices
-        });
-
+        return Results.Ok(new { cStat, xMotivo, maxNSU, invoices = processedInvoices });
     }
     catch (Exception ex)
     {
         Console.WriteLine($"EXCEPTION: {ex.ToString()}");
-        // Retorna JSON problem detail padrão
         return Results.Problem($"Erro Interno: {ex.Message}");
     }
 });
@@ -347,8 +340,6 @@ try {
 } catch (Exception ex) {
     Console.WriteLine($"FATAL ERROR STARTING SERVER: {ex.Message}");
 }
-
-// --- HELPER FUNCTIONS ---
 
 string DecompressGZip(string base64)
 {
