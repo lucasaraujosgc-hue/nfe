@@ -150,15 +150,28 @@ app.MapPost("/api/sefaz/dist-dfe", async (HttpContext context) =>
 
         // --- LÓGICA DE CONEXÃO COM A SEFAZ ---
 
-        // 1. Carregar Certificado
+        // 1. Carregar Certificado (Estratégia Híbrida para Docker/Linux/Windows)
         X509Certificate2 certificate;
-        try {
-             // Flags para compatibilidade Linux/Docker
-             certificate = new X509Certificate2(certPath, password, 
-                X509KeyStorageFlags.MachineKeySet | X509KeyStorageFlags.PersistKeySet | X509KeyStorageFlags.Exportable);
-        } catch (System.Security.Cryptography.CryptographicException ce) {
-             Console.WriteLine($"Crypto Error: {ce.Message}");
-             return Results.BadRequest($"Falha ao abrir certificado (Senha incorreta?): {ce.Message}");
+        try 
+        {
+             // Tentativa 1: EphemeralKeySet (Ideal para Docker/Linux para evitar erro de permissão em keyset)
+             // Funciona melhor quando não precisamos persistir a chave privada no store do usuário/máquina
+             certificate = new X509Certificate2(certPath, password, X509KeyStorageFlags.EphemeralKeySet);
+        } 
+        catch 
+        {
+             Console.WriteLine("Fallback: EphemeralKeySet failed, trying default flags...");
+             try 
+             {
+                 // Tentativa 2: Flags completas (Compatibilidade legada)
+                 certificate = new X509Certificate2(certPath, password, 
+                    X509KeyStorageFlags.MachineKeySet | X509KeyStorageFlags.PersistKeySet | X509KeyStorageFlags.Exportable);
+             } 
+             catch (System.Security.Cryptography.CryptographicException ce) 
+             {
+                 Console.WriteLine($"Crypto Error: {ce.Message}");
+                 return Results.BadRequest($"Falha ao abrir certificado (Senha incorreta?): {ce.Message}");
+             }
         }
 
         // 2. Montar Envelope SOAP
@@ -298,7 +311,11 @@ app.MapPost("/api/sefaz/dist-dfe", async (HttpContext context) =>
     }
 });
 
-app.Run("http://0.0.0.0:5000");
+try {
+    app.Run("http://0.0.0.0:5000");
+} catch (Exception ex) {
+    Console.WriteLine($"FATAL ERROR STARTING SERVER: {ex.Message}");
+}
 
 // --- HELPER FUNCTIONS ---
 

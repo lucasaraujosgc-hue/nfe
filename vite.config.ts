@@ -10,7 +10,7 @@ export default defineConfig({
     allowedHosts: true,
     proxy: {
       '/api': {
-        target: 'http://localhost:5000', // Aponta para o Backend C#
+        target: 'http://127.0.0.1:5000', // Changed to 127.0.0.1 to avoid IPv6 (::1) resolution issues in Node
         changeOrigin: true,
         secure: false
       }
