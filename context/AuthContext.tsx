@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, ReactNode, useEffect } from 'react';
+import React, { createContext, useContext, useState, ReactNode } from 'react';
 
 interface AuthContextType {
   isAuthenticated: boolean;
@@ -13,13 +13,13 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     return localStorage.getItem('nfe_manager_auth') === 'true';
   });
 
-  const login = (user: string, pass: string) => {
-    // In a real app, these would come strictly from process.env
-    // Defaulting to user/password for immediate testing
-    const validUser = process.env.REACT_APP_USER || 'user';
-    const validPass = process.env.REACT_APP_PASS || 'password';
+  const login = (userInput: string, passInput: string) => {
+    // Correção para Vite: Utilizar import.meta.env em vez de process.env
+    // Por padrão (se não houver .env): usuário = 'user', senha = 'password'
+    const validUser = (import.meta as any).env.VITE_USER || 'user';
+    const validPass = (import.meta as any).env.VITE_PASSWORD || 'password';
 
-    if (user === validUser && pass === validPass) {
+    if (userInput === validUser && passInput === validPass) {
       setIsAuthenticated(true);
       localStorage.setItem('nfe_manager_auth', 'true');
       return true;
