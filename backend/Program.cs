@@ -179,13 +179,17 @@ app.MapPost("/api/sefaz/dist-dfe", async (HttpContext context) =>
              }
         }
 
-        // Construção do Envelope SOAP
-        // IMPORTANTE: Remover nfeDadosMsg do namespace se a SEFAZ esperar payload direto, 
-        // mas a NT 2014.002 define nfeDadosMsg como wrapper.
+        // --- CORREÇÃO SOAP 1.2 ---
+        // Ajuste dos Namespaces e Action conforme WSDL oficial do NFeDistribuicaoDFe
+        var wsdlNamespace = "http://www.portalfiscal.inf.br/nfe/wsdl/NFeDistribuicaoDFe";
+        
+        // Envelope SOAP 1.2
         var soapEnvelope = $@"<soap12:Envelope xmlns:xsi=""http://www.w3.org/2001/XMLSchema-instance"" xmlns:xsd=""http://www.w3.org/2001/XMLSchema"" xmlns:soap12=""http://www.w3.org/2003/05/soap-envelope"">
             <soap12:Body>
-                <nfeDistDFeInteresse xmlns=""http://www.portalfiscal.inf.br/nfe"">
-                    <nfeDadosMsg>{xmlBody}</nfeDadosMsg>
+                <nfeDistDFeInteresse xmlns=""{wsdlNamespace}"">
+                    <nfeDadosMsg>
+                        {xmlBody}
+                    </nfeDadosMsg>
                 </nfeDistDFeInteresse>
             </soap12:Body>
         </soap12:Envelope>";
@@ -199,35 +203,37 @@ app.MapPost("/api/sefaz/dist-dfe", async (HttpContext context) =>
         
         var url = "https://www1.nfe.fazenda.gov.br/NFeDistribuicaoDFe/NFeDistribuicaoDFe.asmx";
         
-        // CORREÇÃO CRÍTICA: Configurar Action no Content-Type para SOAP 1.2
         var content = new StringContent(soapEnvelope, Encoding.UTF8, "application/soap+xml");
-        content.Headers.ContentType.Parameters.Add(new System.Net.Http.Headers.NameValueHeaderValue("action", "\"http://www.portalfiscal.inf.br/nfe/nfeDistDFeInteresse\""));
+        
+        // A Action deve incluir o caminho completo definido no WSDL
+        var actionUri = "http://www.portalfiscal.inf.br/nfe/wsdl/NFeDistribuicaoDFe/nfeDistDFeInteresse";
+        content.Headers.ContentType.Parameters.Add(new System.Net.Http.Headers.NameValueHeaderValue("action", $"\"{actionUri}\""));
 
-        Console.WriteLine($"-> Enviando requisição SOAP para {url}...");
+        Console.WriteLine($"-> Enviando requisição SOAP 1.2 para {url}...");
 
         var response = await client.PostAsync(url, content);
         var responseXmlStr = await response.Content.ReadAsStringAsync();
 
-        // Se der erro HTTP, retornamos o corpo do erro para debug no frontend
         if (!response.IsSuccessStatusCode)
         {
             Console.WriteLine($"[SEFAZ HTTP ERRO {response.StatusCode}]: {responseXmlStr}");
-            // Retorna o XML de erro da SEFAZ dentro de um JSON ProblemDetails customizado
             return Results.Problem(detail: $"SEFAZ retornou {response.StatusCode}. Detalhes: {responseXmlStr}", statusCode: (int)response.StatusCode);
         }
 
         Console.WriteLine("-> Resposta SEFAZ recebida. Processando...");
 
         var doc = XDocument.Parse(responseXmlStr);
+        
+        // Namespaces de Resposta do SOAP 1.2
         XNamespace nsSoap = "http://www.w3.org/2003/05/soap-envelope";
         XNamespace nsNfe = "http://www.portalfiscal.inf.br/nfe";
 
         var body = doc.Descendants(nsSoap + "Body").FirstOrDefault();
         var retDistDFeInt = body?.Descendants(nsNfe + "retDistDFeInt").FirstOrDefault();
 
-        // Se não achou retDistDFeInt diretamente, tenta procurar sem namespace ou com namespace do envelope
         if (retDistDFeInt == null) 
         {
+            // Tenta encontrar sem namespace caso a SEFAZ responda de forma atípica
             retDistDFeInt = doc.Descendants().FirstOrDefault(x => x.Name.LocalName == "retDistDFeInt");
         }
 
@@ -245,7 +251,6 @@ app.MapPost("/api/sefaz/dist-dfe", async (HttpContext context) =>
 
         var processedInvoices = new List<object>();
 
-        // cStat 138: Documentos localizados
         if (cStat == "138") 
         {
             var lote = retDistDFeInt.Element(nsNfe + "loteDistDFeInt") ?? retDistDFeInt.Element("loteDistDFeInt");
@@ -262,7 +267,6 @@ app.MapPost("/api/sefaz/dist-dfe", async (HttpContext context) =>
                         var xmlContent = DecompressGZip(base64Content);
                         var docXml = XDocument.Parse(xmlContent);
 
-                        // Processamento simplificado dos tipos de documentos
                         if (schema != null && schema.Contains("resNFe"))
                         {
                             var resNFe = docXml.Root;
@@ -284,8 +288,7 @@ app.MapPost("/api/sefaz/dist-dfe", async (HttpContext context) =>
                         }
                         else if (schema != null && schema.Contains("procNFe"))
                         {
-                            // Lógica completa para NFe processada
-                            var nfeRoot = docXml.Root; // nfeProc
+                            var nfeRoot = docXml.Root; 
                             var nsProc = nfeRoot.GetDefaultNamespace();
                             
                             var nfe = docXml.Descendants(nsProc + "NFe").FirstOrDefault();
