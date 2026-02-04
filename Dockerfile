@@ -1,0 +1,21 @@
+# Usar uma imagem leve do Node.js
+FROM node:18-alpine
+
+# Definir o diretório de trabalho dentro do container
+WORKDIR /app
+
+# Copiar o arquivo de dependências
+COPY package.json ./
+
+# Instalar as dependências
+RUN npm install
+
+# Copiar o restante dos arquivos do projeto
+COPY . .
+
+# Expor a porta padrão do Vite
+EXPOSE 5173
+
+# Comando para iniciar a aplicação em modo de desenvolvimento
+# --host permite acesso externo ao container
+CMD ["npm", "run", "dev", "--", "--host"]
