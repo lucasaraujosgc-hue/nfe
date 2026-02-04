@@ -19,10 +19,13 @@ var app = builder.Build();
 
 app.UseCors("AllowAll");
 
+Console.WriteLine("=== NFe Manager Pro Backend Started ===");
+Console.WriteLine($"Environment: {app.Environment.EnvironmentName}");
+Console.WriteLine($"Listening on: http://0.0.0.0:5000");
+
 // --- ENDPOINTS ---
 
 // 1. Endpoint de Banco de Dados (Leitura/Escrita em Arquivo JSON)
-// Substitui o middleware do Vite para persistência
 var dbPath = Path.Combine(Directory.GetCurrentDirectory(), "../data/db.json");
 if (!Directory.Exists(Path.GetDirectoryName(dbPath)))
     Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
@@ -45,6 +48,7 @@ app.MapPost("/api/db", async (HttpContext context) =>
 // 2. Endpoint de Consulta SEFAZ (DistDFe)
 app.MapPost("/api/sefaz/dist-dfe", async (HttpContext context) =>
 {
+    Console.WriteLine($"[{DateTime.Now}] Received request for /api/sefaz/dist-dfe");
     try
     {
         // Ler payload do Frontend
@@ -63,26 +67,37 @@ app.MapPost("/api/sefaz/dist-dfe", async (HttpContext context) =>
         var dbJson = JObject.Parse(dbContent);
         
         var company = dbJson["companies"]?.FirstOrDefault(c => c["id"]?.ToString() == companyId);
-        if (company == null) return Results.NotFound("Company not found");
+        if (company == null) return Results.NotFound("Company not found in DB");
 
         string certName = company["certificateName"]?.ToString() ?? "";
         
-        // Caminho do Certificado (Assumindo pasta 'certificates' na raiz ou nível acima)
-        // Em produção, isso deve ser um storage seguro ou Azure KeyVault
+        // Caminho do Certificado
         var certPath = Path.Combine(Directory.GetCurrentDirectory(), "../certificates", certName);
         
         if (!File.Exists(certPath))
         {
-            // Tenta na pasta local para dev
+             // Tenta fallback para pasta local
             certPath = Path.Combine(Directory.GetCurrentDirectory(), "certificates", certName);
-            if (!File.Exists(certPath))
-                return Results.BadRequest($"Certificate file not found on server: {certName}. Please upload it to 'certificates' folder.");
+            if (!File.Exists(certPath)) {
+                Console.WriteLine($"Error: Certificate not found at {certPath}");
+                return Results.BadRequest($"Certificado não encontrado no servidor. Esperado em: certificates/{certName}");
+            }
         }
+
+        Console.WriteLine($"Loading Certificate: {certPath}");
 
         // --- LÓGICA DE CONEXÃO COM A SEFAZ ---
 
         // 1. Carregar Certificado
-        var certificate = new X509Certificate2(certPath, password);
+        X509Certificate2 certificate;
+        try {
+             // Flags adicionadas para compatibilidade com Linux/Docker e evitar problemas de KeySet
+             certificate = new X509Certificate2(certPath, password, 
+                X509KeyStorageFlags.MachineKeySet | X509KeyStorageFlags.PersistKeySet | X509KeyStorageFlags.Exportable);
+        } catch (System.Security.Cryptography.CryptographicException ce) {
+             Console.WriteLine($"Crypto Error: {ce.Message}");
+             return Results.BadRequest($"Falha ao abrir certificado. Senha incorreta ou arquivo corrompido. Erro: {ce.Message}");
+        }
 
         // 2. Montar Envelope SOAP
         var soapEnvelope = $@"<soap12:Envelope xmlns:xsi=""http://www.w3.org/2001/XMLSchema-instance"" xmlns:xsd=""http://www.w3.org/2001/XMLSchema"" xmlns:soap12=""http://www.w3.org/2003/05/soap-envelope"">
@@ -96,12 +111,15 @@ app.MapPost("/api/sefaz/dist-dfe", async (HttpContext context) =>
         // 3. Configurar Cliente HTTP com SSL Mútuo
         var handler = new HttpClientHandler();
         handler.ClientCertificates.Add(certificate);
-        handler.ServerCertificateCustomValidationCallback = (message, cert, chain, errors) => true; // Confia no cert da SEFAZ
+        // Ignorar erros de cadeia de certificado da SEFAZ (comum em ambientes de dev sem cadeias ICP-Brasil instaladas)
+        handler.ServerCertificateCustomValidationCallback = (message, cert, chain, errors) => true; 
 
         using var client = new HttpClient(handler);
+        client.Timeout = TimeSpan.FromSeconds(30);
         
-        // URL do Ambiente Nacional (Produção)
         var url = "https://www1.nfe.fazenda.gov.br/NFeDistribuicaoDFe/NFeDistribuicaoDFe.asmx";
+        
+        Console.WriteLine($"Sending SOAP Request to {url}...");
         
         var content = new StringContent(soapEnvelope, Encoding.UTF8, "application/soap+xml");
 
@@ -110,7 +128,12 @@ app.MapPost("/api/sefaz/dist-dfe", async (HttpContext context) =>
         var responseXmlStr = await response.Content.ReadAsStringAsync();
 
         if (!response.IsSuccessStatusCode)
+        {
+            Console.WriteLine($"SEFAZ Error {response.StatusCode}: {responseXmlStr}");
             return Results.StatusCode((int)response.StatusCode);
+        }
+
+        Console.WriteLine("SEFAZ Response received. Parsing...");
 
         // 5. Processar Retorno XML
         var doc = XDocument.Parse(responseXmlStr);
@@ -127,11 +150,12 @@ app.MapPost("/api/sefaz/dist-dfe", async (HttpContext context) =>
         var cStat = retDistDFeInt.Element(nsNfe + "cStat")?.Value;
         var xMotivo = retDistDFeInt.Element(nsNfe + "xMotivo")?.Value;
         var maxNSU = retDistDFeInt.Element(nsNfe + "maxNSU")?.Value;
+        
+        Console.WriteLine($"SEFAZ Status: {cStat} - {xMotivo}");
 
         var processedInvoices = new List<object>();
 
-        // Se cStat == 138 (Documentos localizados)
-        if (cStat == "138")
+        if (cStat == "138") // Documentos localizados
         {
             var lote = retDistDFeInt.Element(nsNfe + "loteDistDFeInt");
             if (lote != null)
@@ -157,7 +181,7 @@ app.MapPost("/api/sefaz/dist-dfe", async (HttpContext context) =>
                             amount = double.Parse(resNFe?.Element(nsNfe + "vNF")?.Value?.Replace(".", ",") ?? "0"),
                             status = resNFe?.Element(nsNfe + "cSitNFe")?.Value == "1" ? "authorized" : "canceled",
                             nsu = nsu,
-                            numero = "000", // Resumo não tem número
+                            numero = "000",
                             serie = "0",
                             companyId = companyId,
                             id = $"inv-{Guid.NewGuid()}",
@@ -181,7 +205,7 @@ app.MapPost("/api/sefaz/dist-dfe", async (HttpContext context) =>
                             emissionDate = ide?.Element(nsNfe + "dhEmi")?.Value,
                             authorizationDate = prot?.Element(nsNfe + "dhRecbto")?.Value,
                             amount = double.Parse(total?.Element(nsNfe + "vNF")?.Value?.Replace(".", ",") ?? "0"),
-                            status = "authorized", // procNFe é sempre autorizada
+                            status = "authorized",
                             nsu = nsu,
                             numero = ide?.Element(nsNfe + "nNF")?.Value,
                             serie = ide?.Element(nsNfe + "serie")?.Value,
@@ -207,8 +231,8 @@ app.MapPost("/api/sefaz/dist-dfe", async (HttpContext context) =>
     }
     catch (Exception ex)
     {
-        Console.WriteLine(ex.ToString());
-        return Results.Problem(ex.Message);
+        Console.WriteLine($"EXCEPTION: {ex.ToString()}");
+        return Results.Problem($"Erro interno no backend: {ex.Message}");
     }
 });
 

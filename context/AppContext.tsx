@@ -134,28 +134,41 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       addLog(`Gerando XML distDFeInt (NSU: ${company.lastNSU})...`, 'info');
       
       // 2. Tentar conexão real com Backend (Proxy SEFAZ)
-      // Em um ambiente de produção real, isso chamaria um endpoint que tem acesso ao certificado .pfx no servidor
-      // e faria a comunicação SSL mútua com a SEFAZ.
-      addLog("Enviando requisição SOAP...", 'warning');
+      addLog("Enviando requisição SOAP via Backend C#...", 'warning');
       
-      const response = await fetch('/api/sefaz/dist-dfe', {
-          method: 'POST',
-          headers: {
-              'Content-Type': 'application/json',
-              'X-Company-ID': companyId
-          },
-          body: JSON.stringify({
-              xml: xmlPayload,
-              password: company.certificatePassword // Enviando senha para decifrar PFX no backend
-          })
-      });
+      let response;
+      try {
+          response = await fetch('/api/sefaz/dist-dfe', {
+              method: 'POST',
+              headers: {
+                  'Content-Type': 'application/json',
+                  'X-Company-ID': companyId
+              },
+              body: JSON.stringify({
+                  xml: xmlPayload,
+                  password: company.certificatePassword // Enviando senha para decifrar PFX no backend
+              })
+          });
+      } catch (netErr) {
+          throw new Error("Não foi possível conectar ao servidor Backend na porta 5000. Verifique se ele está rodando.");
+      }
 
       if (!response.ok) {
-          // Se o backend não estiver implementado (caso deste ambiente demo), cairá aqui
+          let errorMsg = response.statusText;
+          try {
+             // Tenta extrair a mensagem detalhada do corpo
+             const errorBody = await response.text();
+             if (errorBody) {
+                 // Remove aspas extras se for string JSON simples
+                 errorMsg = errorBody.replace(/^"|"$/g, '');
+             }
+          } catch (e) { /* ignore json parse error */ }
+
           if (response.status === 404) {
-              throw new Error("Endpoint de comunicação com SEFAZ não encontrado (/api/sefaz/dist-dfe). Verifique se o Backend Java/Node está rodando.");
+              throw new Error("Rota do Backend não encontrada (404).");
           }
-          throw new Error(`Erro na comunicação com servidor: ${response.statusText}`);
+          
+          throw new Error(`Erro Servidor (${response.status}): ${errorMsg}`);
       }
 
       const data = await response.json();
@@ -179,12 +192,21 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
             
             addLog(`Sucesso: ${newInvoices.length} documentos retornados da SEFAZ.`, 'success');
       } else {
-          addLog("Requisição completada. Nenhum documento novo encontrado (cStat 137).", 'success');
+          // Se houve erro na SEFAZ (cStat != 138 e != 137)
+          if (data.cStat !== '138' && data.cStat !== '137') {
+              addLog(`SEFAZ retornou: ${data.cStat} - ${data.xMotivo}`, 'warning');
+          } else {
+              addLog("Requisição completada. Nenhum documento novo encontrado.", 'success');
+              // Atualiza NSU mesmo se vazio, para não consultar o mesmo intervalo
+              if (data.maxNSU && data.maxNSU !== company.lastNSU) {
+                  updateCompany({ ...company, lastNSU: data.maxNSU });
+                  addLog(`Cursor avançado para NSU: ${data.maxNSU}`, 'info');
+              }
+          }
       }
 
     } catch (err: any) {
-      addLog(`FALHA DE CONEXÃO: ${err.message}`, 'error');
-      addLog("Nota: Como este é um ambiente Frontend-only, a conexão real com a SEFAZ falhou pois requer um Backend seguro.", 'warning');
+      addLog(`FALHA: ${err.message}`, 'error');
       console.error(err);
     } finally {
       setIsLoading(false);
