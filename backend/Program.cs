@@ -6,7 +6,8 @@ using System.Xml.Linq;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using Microsoft.AspNetCore.Http;
-using Microsoft.AspNetCore.Hosting; 
+using Microsoft.AspNetCore.Hosting;
+using System.Globalization; 
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -267,23 +268,30 @@ app.MapPost("/api/sefaz/dist-dfe", async (HttpContext context) =>
                         var xmlContent = DecompressGZip(base64Content);
                         var docXml = XDocument.Parse(xmlContent);
 
+                        // Define a cultura invariante para garantir que "441.88" seja lido corretamente
+                        // independente da configuração do servidor (ponto vs vírgula)
+                        var culture = CultureInfo.InvariantCulture;
+
                         if (schema != null && schema.Contains("resNFe"))
                         {
                             var resNFe = docXml.Root;
                             var nsRes = resNFe.GetDefaultNamespace();
+                            
                             processedInvoices.Add(new {
                                 accessKey = resNFe.Element(nsRes + "chNFe")?.Value,
                                 emitenteCNPJ = resNFe.Element(nsRes + "CNPJ")?.Value ?? resNFe.Element(nsRes + "CPF")?.Value,
                                 emitenteName = resNFe.Element(nsRes + "xNome")?.Value,
                                 emissionDate = resNFe.Element(nsRes + "dhEmi")?.Value,
-                                amount = double.Parse(resNFe.Element(nsRes + "vNF")?.Value?.Replace(".", ",") ?? "0"),
+                                // CORREÇÃO: Usa InvariantCulture para ler o ponto decimal corretamente
+                                amount = double.Parse(resNFe.Element(nsRes + "vNF")?.Value ?? "0", culture),
                                 status = resNFe.Element(nsRes + "cSitNFe")?.Value == "1" ? "authorized" : "canceled",
                                 nsu = nsu,
                                 numero = "000",
                                 serie = "0",
                                 companyId = companyId,
                                 id = $"inv-{Guid.NewGuid()}",
-                                downloaded = false
+                                downloaded = false,
+                                originalXml = xmlContent // SALVA O XML ORIGINAL
                             });
                         }
                         else if (schema != null && schema.Contains("procNFe"))
@@ -307,7 +315,8 @@ app.MapPost("/api/sefaz/dist-dfe", async (HttpContext context) =>
                                 emitenteName = emit?.Element(nsNFeLocal + "xNome")?.Value,
                                 emissionDate = ide?.Element(nsNFeLocal + "dhEmi")?.Value,
                                 authorizationDate = prot?.Element(nsProc + "dhRecbto")?.Value,
-                                amount = double.Parse(total?.Element(nsNFeLocal + "vNF")?.Value?.Replace(".", ",") ?? "0"),
+                                // CORREÇÃO: Usa InvariantCulture para ler o ponto decimal corretamente
+                                amount = double.Parse(total?.Element(nsNFeLocal + "vNF")?.Value ?? "0", culture),
                                 status = "authorized",
                                 nsu = nsu,
                                 numero = ide?.Element(nsNFeLocal + "nNF")?.Value,
@@ -316,7 +325,8 @@ app.MapPost("/api/sefaz/dist-dfe", async (HttpContext context) =>
                                 operationType = ide?.Element(nsNFeLocal + "tpNF")?.Value == "0" ? "Entrada" : "Saida",
                                 companyId = companyId,
                                 id = $"inv-{Guid.NewGuid()}",
-                                downloaded = true
+                                downloaded = true,
+                                originalXml = xmlContent // SALVA O XML ORIGINAL
                             });
                         }
                     } catch (Exception parseEx) {

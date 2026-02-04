@@ -1,3 +1,4 @@
+
 export interface Company {
   id: string;
   cnpj: string;
@@ -25,6 +26,7 @@ export interface Invoice {
   downloaded: boolean;
   uf?: string; // UF do Emitente
   operationType?: string; // 'Entrada' | 'Saida'
+  originalXml?: string; // O XML real retornado pela SEFAZ
 }
 
 export type InvoiceFilter = {

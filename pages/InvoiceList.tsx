@@ -8,7 +8,7 @@ import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
 import { Invoice } from '../types';
 
-// Helper para reconstruir um XML válido (Simulação baseada nos dados disponíveis)
+// Helper para reconstruir um XML válido APENAS como fallback caso não tenhamos o original
 const generateXMLContent = (inv: Invoice): string => {
     return `<?xml version="1.0" encoding="UTF-8"?>
 <nfeProc versao="4.00" xmlns="http://www.portalfiscal.inf.br/nfe">
@@ -146,9 +146,14 @@ export const InvoiceList: React.FC = () => {
         // Single File Download
         if (invoicesToDownload.length === 1) {
             const inv = invoicesToDownload[0];
-            const xmlContent = generateXMLContent(inv);
+            // Prioriza o XML Original que veio da SEFAZ
+            const xmlContent = inv.originalXml || generateXMLContent(inv);
+            
+            // Determina o sufixo com base no tipo de conteúdo (resumo ou completa)
+            const suffix = xmlContent.includes('resNFe') ? '-resumo.xml' : '-procNFe.xml';
+            
             const blob = new Blob([xmlContent], { type: "text/xml;charset=utf-8" });
-            saveAs(blob, `${inv.accessKey}-procNfe.xml`);
+            saveAs(blob, `${inv.accessKey}${suffix}`);
         } 
         // Multiple Files (Zip)
         else {
@@ -156,8 +161,9 @@ export const InvoiceList: React.FC = () => {
             const folder = zip.folder("notas_fiscais");
             
             invoicesToDownload.forEach(inv => {
-                const xmlContent = generateXMLContent(inv);
-                folder.file(`${inv.accessKey}-procNfe.xml`, xmlContent);
+                const xmlContent = inv.originalXml || generateXMLContent(inv);
+                const suffix = xmlContent.includes('resNFe') ? '-resumo.xml' : '-procNFe.xml';
+                folder.file(`${inv.accessKey}${suffix}`, xmlContent);
             });
             
             const content = await zip.generateAsync({ type: "blob" });
