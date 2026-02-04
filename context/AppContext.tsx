@@ -6,17 +6,19 @@ interface AppContextType {
   companies: Company[];
   invoices: Invoice[];
   addCompany: (company: Company) => void;
+  updateCompany: (company: Company) => void;
+  removeCompany: (id: string) => void;
   markAsDownloaded: (ids: string[]) => void;
-  searchInvoices: (companyId: string) => void;
+  searchInvoices: (companyId: string) => Promise<void>;
   isLoading: boolean;
+  error: string | null;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
 
-const DB_KEY = 'nfe_manager_db_v1';
+const DB_KEY = 'nfe_manager_db_v3'; // Incrementado para garantir estrutura nova
 
 export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
-  // Load initial state from LocalStorage (simulating app/data/db.json) or fall back to Mocks
   const [companies, setCompanies] = useState<Company[]>(() => {
     const saved = localStorage.getItem(DB_KEY);
     return saved ? JSON.parse(saved).companies : MOCK_COMPANIES;
@@ -28,8 +30,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   });
 
   const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  // Persistence Effect: Save to "app/data" (LocalStorage) whenever data changes
   useEffect(() => {
     const dbData = {
       companies,
@@ -43,23 +45,82 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setCompanies(prev => [...prev, company]);
   };
 
+  const updateCompany = (updatedCompany: Company) => {
+    setCompanies(prev => prev.map(c => c.id === updatedCompany.id ? updatedCompany : c));
+  };
+
+  const removeCompany = (id: string) => {
+    setCompanies(prev => prev.filter(c => c.id !== id));
+    // Opcional: Remover notas fiscais associadas a essa empresa
+    setInvoices(prev => prev.filter(inv => inv.companyId !== id));
+  };
+
   const markAsDownloaded = (ids: string[]) => {
     setInvoices(prev => prev.map(inv => 
       ids.includes(inv.id) ? { ...inv, downloaded: true } : inv
     ));
   };
 
-  const searchInvoices = (companyId: string) => {
+  // Implementação REAL de busca (Requer Backend)
+  const searchInvoices = async (companyId: string) => {
     setIsLoading(true);
-    // Simulate API call delay to SEFAZ
-    setTimeout(() => {
+    setError(null);
+    
+    try {
+      const company = companies.find(c => c.id === companyId);
+      if (!company) throw new Error("Empresa não encontrada");
+
+      // EM PRODUÇÃO: A URL abaixo deve apontar para o seu backend real (Node/Python/PHP)
+      // O Backend deve possuir o certificado pfx decifrado para comunicar com a SEFAZ.
+      const response = await fetch('http://localhost:3000/api/nfe/consultar-destinadas', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${localStorage.getItem('token') || ''}` // Exemplo de auth
+        },
+        body: JSON.stringify({
+          cnpj: company.cnpj,
+          // Nota: O certificado físico não é enviado aqui por JSON, 
+          // ele deve ter sido enviado via upload prévio ou estar configurado no servidor.
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error(`Erro na comunicação com servidor: ${response.statusText}`);
+      }
+
+      const data = await response.json();
+      
+      // Assume que o backend retorna um array de notas novas
+      const newInvoices: Invoice[] = data.invoices;
+      
+      // Mescla com as existentes evitando duplicatas
+      setInvoices(prev => {
+        const existingIds = new Set(prev.map(i => i.accessKey));
+        const uniqueNew = newInvoices.filter(i => !existingIds.has(i.accessKey));
+        return [...uniqueNew, ...prev];
+      });
+
+    } catch (err: any) {
+      console.error("Falha na busca real:", err);
+      setError("Não foi possível conectar ao servidor de NFe. Verifique se o Backend está rodando.");
+    } finally {
       setIsLoading(false);
-      // In a real scenario, this would fetch new data and append to `invoices`
-    }, 1500);
+    }
   };
 
   return (
-    <AppContext.Provider value={{ companies, invoices, addCompany, markAsDownloaded, searchInvoices, isLoading }}>
+    <AppContext.Provider value={{ 
+      companies, 
+      invoices, 
+      addCompany, 
+      updateCompany, 
+      removeCompany, 
+      markAsDownloaded, 
+      searchInvoices, 
+      isLoading,
+      error
+    }}>
       {children}
     </AppContext.Provider>
   );

@@ -1,11 +1,17 @@
 import React, { useState } from 'react';
-import { Upload, Building2, CheckCircle, AlertCircle, ShieldCheck } from 'lucide-react';
+import { Upload, Building2, CheckCircle, AlertCircle, ShieldCheck, Edit2, Trash2, Plus, X, Save } from 'lucide-react';
 import { formatCNPJ } from '../utils';
 import { useAppContext } from '../context/AppContext';
 import { Company } from '../types';
 
 export const CompanyRegistration: React.FC = () => {
-  const { addCompany, companies } = useAppContext();
+  const { addCompany, updateCompany, removeCompany, companies } = useAppContext();
+  
+  // States para controle de visualização
+  const [viewMode, setViewMode] = useState<'list' | 'form'>('list');
+  const [editingId, setEditingId] = useState<string | null>(null);
+
+  // States do formulário
   const [formData, setFormData] = useState({
     cnpj: '',
     razaoSocial: '',
@@ -13,175 +19,282 @@ export const CompanyRegistration: React.FC = () => {
   });
   const [file, setFile] = useState<File | null>(null);
   const [password, setPassword] = useState('');
-  const [success, setSuccess] = useState(false);
+  const [successMsg, setSuccessMsg] = useState('');
+
+  // Prepara o formulário para criar nova empresa
+  const handleNew = () => {
+    setFormData({ cnpj: '', razaoSocial: '', apelido: '' });
+    setFile(null);
+    setPassword('');
+    setEditingId(null);
+    setViewMode('form');
+    setSuccessMsg('');
+  };
+
+  // Prepara o formulário para editar
+  const handleEdit = (company: Company) => {
+    setFormData({
+      cnpj: company.cnpj,
+      razaoSocial: company.razaoSocial,
+      apelido: company.apelido,
+    });
+    setFile(null); // O usuário só faz upload se quiser trocar
+    setPassword(''); // Senha sempre limpa por segurança
+    setEditingId(company.id);
+    setViewMode('form');
+    setSuccessMsg('');
+  };
+
+  // Lógica de Exclusão
+  const handleDelete = (id: string, name: string) => {
+    if (window.confirm(`Tem certeza que deseja excluir a empresa ${name}? Todas as configurações serão perdidas.`)) {
+      removeCompany(id);
+    }
+  };
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!file) return;
 
-    const newCompany: Company = {
-      id: Date.now().toString(),
-      cnpj: formData.cnpj,
-      razaoSocial: formData.razaoSocial,
-      apelido: formData.apelido,
-      certificateName: file.name,
-      certificateExpiry: '2025-12-31', // Mock expiry
-    };
+    if (editingId) {
+        // Modo Edição
+        const existingCompany = companies.find(c => c.id === editingId);
+        if (!existingCompany) return;
 
-    addCompany(newCompany);
-    setSuccess(true);
+        const updatedCompany: Company = {
+            ...existingCompany,
+            cnpj: formData.cnpj,
+            razaoSocial: formData.razaoSocial,
+            apelido: formData.apelido,
+            // Só atualiza certificado se um novo arquivo foi enviado
+            certificateName: file ? file.name : existingCompany.certificateName,
+            certificateExpiry: file ? '2026-01-01' : existingCompany.certificateExpiry, // Numa app real, o backend leria a data do arquivo
+        };
+        updateCompany(updatedCompany);
+        setSuccessMsg('Empresa atualizada com sucesso!');
+    } else {
+        // Modo Criação
+        if (!file) {
+            alert("Certificado digital é obrigatório para cadastro.");
+            return;
+        }
+        const newCompany: Company = {
+            id: Date.now().toString(),
+            cnpj: formData.cnpj,
+            razaoSocial: formData.razaoSocial,
+            apelido: formData.apelido,
+            certificateName: file.name,
+            certificateExpiry: '2025-12-31', 
+        };
+        addCompany(newCompany);
+        setSuccessMsg('Empresa cadastrada com sucesso!');
+    }
+
+    // Feedback visual e retorno à lista
     setTimeout(() => {
-        setSuccess(false);
-        setFormData({ cnpj: '', razaoSocial: '', apelido: '' });
-        setFile(null);
-        setPassword('');
-    }, 3000);
+        setSuccessMsg('');
+        setViewMode('list');
+    }, 1500);
   };
 
-  return (
-    <div className="max-w-4xl mx-auto">
-      <div className="flex justify-between items-center mb-8">
-        <div>
-          <h2 className="text-2xl font-bold text-gray-900">Gerenciar Empresas</h2>
-          <p className="text-gray-500">Cadastre o certificado digital (.pfx) para consulta automática.</p>
+  // --- RENDERIZAÇÃO DA LISTA ---
+  if (viewMode === 'list') {
+    return (
+      <div className="max-w-6xl mx-auto">
+        <div className="flex justify-between items-center mb-8">
+          <div>
+            <h2 className="text-2xl font-bold text-gray-900">Gerenciar Empresas</h2>
+            <p className="text-gray-500">Administre os cadastros e certificados digitais.</p>
+          </div>
+          <button 
+            onClick={handleNew}
+            className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg font-medium transition-colors shadow-sm"
+          >
+            <Plus className="w-5 h-5" /> Nova Empresa
+          </button>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          {companies.map((company) => (
+            <div key={company.id} className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 flex flex-col justify-between hover:shadow-md transition-shadow">
+              <div>
+                <div className="flex justify-between items-start mb-4">
+                  <div className="bg-blue-50 p-3 rounded-lg">
+                    <Building2 className="w-6 h-6 text-blue-600" />
+                  </div>
+                  <span className="text-xs font-semibold bg-green-100 text-green-700 px-2 py-1 rounded-full flex items-center gap-1">
+                    <CheckCircle className="w-3 h-3" /> Ativo
+                  </span>
+                </div>
+                
+                <h3 className="text-lg font-bold text-gray-900 mb-1">{company.apelido}</h3>
+                <p className="text-sm text-gray-600 mb-4">{company.razaoSocial}</p>
+                
+                <div className="space-y-2 mb-6">
+                   <div className="text-sm">
+                     <span className="text-gray-500 block text-xs uppercase font-semibold">CNPJ</span>
+                     <span className="font-mono text-gray-800">{company.cnpj}</span>
+                   </div>
+                   <div className="text-sm">
+                     <span className="text-gray-500 block text-xs uppercase font-semibold">Certificado</span>
+                     <div className="flex items-center gap-1 text-blue-600">
+                        <ShieldCheck className="w-3 h-3" />
+                        <span className="truncate w-40">{company.certificateName || 'Não configurado'}</span>
+                     </div>
+                   </div>
+                </div>
+              </div>
+
+              <div className="flex gap-3 pt-4 border-t border-gray-100">
+                <button 
+                    onClick={() => handleEdit(company)}
+                    className="flex-1 flex items-center justify-center gap-2 px-3 py-2 bg-gray-50 text-gray-700 rounded-lg hover:bg-gray-100 border border-gray-200 text-sm font-medium transition-colors"
+                >
+                    <Edit2 className="w-4 h-4" /> Editar
+                </button>
+                <button 
+                    onClick={() => handleDelete(company.id, company.apelido)}
+                    className="flex items-center justify-center px-3 py-2 bg-red-50 text-red-600 rounded-lg hover:bg-red-100 border border-red-100 transition-colors"
+                    title="Excluir Empresa"
+                >
+                    <Trash2 className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+          ))}
+
+          {companies.length === 0 && (
+            <div className="col-span-full py-12 flex flex-col items-center justify-center text-gray-400 bg-white rounded-xl border border-dashed border-gray-300">
+              <Building2 className="w-12 h-12 mb-3 opacity-20" />
+              <p className="text-lg font-medium text-gray-500">Nenhuma empresa cadastrada</p>
+              <p className="text-sm">Clique em "Nova Empresa" para começar.</p>
+            </div>
+          )}
         </div>
       </div>
+    );
+  }
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-        {/* Registration Form */}
-        <div className="lg:col-span-2 space-y-6">
-          <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200">
-            <h3 className="text-lg font-semibold text-gray-800 mb-4 flex items-center gap-2">
-              <Building2 className="w-5 h-5 text-blue-600" />
-              Nova Empresa
-            </h3>
-            
-            {success && (
-              <div className="mb-4 p-4 bg-green-50 text-green-700 rounded-lg flex items-center gap-2 border border-green-200">
+  // --- RENDERIZAÇÃO DO FORMULÁRIO ---
+  return (
+    <div className="max-w-2xl mx-auto">
+        <div className="mb-6 flex items-center justify-between">
+            <div>
+                <h2 className="text-2xl font-bold text-gray-900">
+                    {editingId ? 'Editar Empresa' : 'Cadastrar Empresa'}
+                </h2>
+                <p className="text-gray-500">Preencha os dados fiscais e anexe o certificado.</p>
+            </div>
+            <button 
+                onClick={() => setViewMode('list')}
+                className="p-2 hover:bg-gray-200 rounded-full transition-colors"
+            >
+                <X className="w-6 h-6 text-gray-500" />
+            </button>
+        </div>
+
+        <div className="bg-white rounded-xl shadow-lg border border-gray-200 overflow-hidden">
+            {successMsg && (
+              <div className="p-4 bg-green-50 text-green-700 flex items-center justify-center gap-2 border-b border-green-100">
                 <CheckCircle className="w-5 h-5" />
-                <span>Empresa cadastrada com sucesso!</span>
+                <span className="font-medium">{successMsg}</span>
               </div>
             )}
 
-            <form onSubmit={handleSubmit} className="space-y-4">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">CNPJ</label>
-                  <input
-                    type="text"
-                    required
-                    placeholder="00.000.000/0000-00"
-                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all"
-                    value={formData.cnpj}
-                    onChange={(e) => setFormData({ ...formData, cnpj: formatCNPJ(e.target.value) })}
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Apelido (Identificação Interna)</label>
-                  <input
-                    type="text"
-                    required
-                    placeholder="Ex: Matriz"
-                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all"
-                    value={formData.apelido}
-                    onChange={(e) => setFormData({ ...formData, apelido: e.target.value })}
-                  />
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Razão Social</label>
-                <input
-                  type="text"
-                  required
-                  placeholder="Nome completo da empresa"
-                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all"
-                  value={formData.razaoSocial}
-                  onChange={(e) => setFormData({ ...formData, razaoSocial: e.target.value })}
-                />
-              </div>
-
-              <div className="border-t border-gray-100 my-4 pt-4">
-                <label className="block text-sm font-medium text-gray-700 mb-2">Certificado Digital (.pfx)</label>
-                <div className="flex items-center justify-center w-full">
-                  <label className={`flex flex-col items-center justify-center w-full h-32 border-2 border-dashed rounded-lg cursor-pointer transition-colors ${file ? 'border-green-400 bg-green-50' : 'border-gray-300 hover:bg-gray-50'}`}>
-                    <div className="flex flex-col items-center justify-center pt-5 pb-6">
-                      <Upload className={`w-8 h-8 mb-3 ${file ? 'text-green-500' : 'text-gray-400'}`} />
-                      <p className="mb-2 text-sm text-gray-500">
-                        {file ? <span className="font-semibold text-green-700">{file.name}</span> : <><span className="font-semibold">Clique para enviar</span> ou arraste</>}
-                      </p>
-                      <p className="text-xs text-gray-500">Apenas arquivos .PFX ou .P12</p>
-                    </div>
-                    <input 
-                      type="file" 
-                      className="hidden" 
-                      accept=".pfx,.p12"
-                      onChange={(e) => setFile(e.target.files ? e.target.files[0] : null)}
-                    />
-                  </label>
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Senha do Certificado</label>
-                <input
-                  type="password"
-                  required={!!file}
-                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                />
-              </div>
-
-              <div className="pt-2">
-                <button
-                  type="submit"
-                  disabled={!file}
-                  className="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-2.5 rounded-lg transition-colors shadow-lg disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  Cadastrar Empresa
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-
-        {/* Existing Companies List */}
-        <div className="lg:col-span-1">
-          <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200">
-            <h3 className="text-lg font-semibold text-gray-800 mb-4">Empresas Ativas</h3>
-            <div className="space-y-4">
-              {companies.map((company) => (
-                <div key={company.id} className="p-4 rounded-lg border border-gray-100 hover:border-blue-200 bg-gray-50 hover:bg-blue-50 transition-all">
-                  <div className="flex justify-between items-start">
+            <form onSubmit={handleSubmit} className="p-8 space-y-6">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                     <div>
-                      <h4 className="font-medium text-gray-900">{company.apelido}</h4>
-                      <p className="text-xs text-gray-500 mt-1">{company.razaoSocial}</p>
-                      <p className="text-xs font-mono text-gray-600 mt-1">{company.cnpj}</p>
+                        <label className="block text-sm font-medium text-gray-700 mb-2">CNPJ</label>
+                        <input
+                            type="text"
+                            required
+                            placeholder="00.000.000/0000-00"
+                            className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all"
+                            value={formData.cnpj}
+                            onChange={(e) => setFormData({ ...formData, cnpj: formatCNPJ(e.target.value) })}
+                        />
                     </div>
-                    <div className="bg-green-100 p-1.5 rounded-full">
-                      <CheckCircle className="w-3 h-3 text-green-600" />
+                    <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-2">Apelido</label>
+                        <input
+                            type="text"
+                            required
+                            placeholder="Ex: Filial SP"
+                            className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all"
+                            value={formData.apelido}
+                            onChange={(e) => setFormData({ ...formData, apelido: e.target.value })}
+                        />
                     </div>
-                  </div>
-                  {company.certificateName && (
-                     <div className="mt-3 flex items-center gap-2 text-xs text-blue-600 bg-blue-100/50 px-2 py-1 rounded">
-                       <ShieldCheck className="w-3 h-3" />
-                       <span className="truncate max-w-[150px]">{company.certificateName}</span>
-                     </div>
-                  )}
                 </div>
-              ))}
-              
-              {companies.length === 0 && (
-                <div className="text-center py-8 text-gray-400">
-                  <AlertCircle className="w-8 h-8 mx-auto mb-2 opacity-50" />
-                  <p className="text-sm">Nenhuma empresa cadastrada.</p>
+
+                <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">Razão Social</label>
+                    <input
+                        type="text"
+                        required
+                        className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all"
+                        value={formData.razaoSocial}
+                        onChange={(e) => setFormData({ ...formData, razaoSocial: e.target.value })}
+                    />
                 </div>
-              )}
-            </div>
-          </div>
+
+                <div className="border-t border-gray-100 pt-6">
+                    <h4 className="text-sm font-bold text-gray-900 mb-4 flex items-center gap-2">
+                        <ShieldCheck className="w-4 h-4 text-blue-600" />
+                        Certificado Digital (A1)
+                    </h4>
+                    
+                    <div className="bg-gray-50 p-4 rounded-lg border border-gray-200">
+                        {editingId && !file && (
+                            <div className="mb-4 text-sm text-gray-600 flex items-center gap-2">
+                                <CheckCircle className="w-4 h-4 text-green-500" />
+                                <span>Certificado atual: <strong>{companies.find(c => c.id === editingId)?.certificateName}</strong></span>
+                            </div>
+                        )}
+                        
+                        <label className="block text-sm font-medium text-gray-700 mb-2">
+                            {editingId ? 'Trocar Certificado (Opcional)' : 'Arquivo .PFX ou .P12'}
+                        </label>
+                        <input 
+                            type="file" 
+                            accept=".pfx,.p12"
+                            className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 transition-colors"
+                            onChange={(e) => setFile(e.target.files ? e.target.files[0] : null)}
+                        />
+                    </div>
+                </div>
+
+                {file && (
+                    <div className="animate-in fade-in slide-in-from-top-2 duration-300">
+                        <label className="block text-sm font-medium text-gray-700 mb-2">Senha do Certificado</label>
+                        <input
+                            type="password"
+                            required
+                            placeholder="Senha do arquivo .pfx"
+                            className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all"
+                            value={password}
+                            onChange={(e) => setPassword(e.target.value)}
+                        />
+                    </div>
+                )}
+
+                <div className="pt-4 flex gap-3">
+                    <button
+                        type="button"
+                        onClick={() => setViewMode('list')}
+                        className="flex-1 px-4 py-3 bg-white text-gray-700 font-medium rounded-lg border border-gray-300 hover:bg-gray-50 transition-colors"
+                    >
+                        Cancelar
+                    </button>
+                    <button
+                        type="submit"
+                        className="flex-[2] flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-700 text-white font-medium py-3 rounded-lg transition-colors shadow-md"
+                    >
+                        <Save className="w-5 h-5" />
+                        {editingId ? 'Salvar Alterações' : 'Cadastrar Empresa'}
+                    </button>
+                </div>
+            </form>
         </div>
-      </div>
     </div>
   );
 };
