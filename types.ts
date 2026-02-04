@@ -5,6 +5,7 @@ export interface Company {
   apelido: string;
   certificateName?: string;
   certificateExpiry?: string;
+  lastNSU: string; // Controle do último NSU consultado (Max 15 dígitos)
 }
 
 export interface Invoice {

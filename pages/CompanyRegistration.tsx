@@ -67,7 +67,9 @@ export const CompanyRegistration: React.FC = () => {
             apelido: formData.apelido,
             // Só atualiza certificado se um novo arquivo foi enviado
             certificateName: file ? file.name : existingCompany.certificateName,
-            certificateExpiry: file ? '2026-01-01' : existingCompany.certificateExpiry, // Numa app real, o backend leria a data do arquivo
+            certificateExpiry: file ? '2026-01-01' : existingCompany.certificateExpiry,
+            // Mantém o NSU atual para não resetar a busca
+            lastNSU: existingCompany.lastNSU
         };
         updateCompany(updatedCompany);
         setSuccessMsg('Empresa atualizada com sucesso!');
@@ -84,6 +86,7 @@ export const CompanyRegistration: React.FC = () => {
             apelido: formData.apelido,
             certificateName: file.name,
             certificateExpiry: '2025-12-31', 
+            lastNSU: '0' // Começa a busca do início
         };
         addCompany(newCompany);
         setSuccessMsg('Empresa cadastrada com sucesso!');
@@ -140,6 +143,10 @@ export const CompanyRegistration: React.FC = () => {
                         <ShieldCheck className="w-3 h-3" />
                         <span className="truncate w-40">{company.certificateName || 'Não configurado'}</span>
                      </div>
+                   </div>
+                   <div className="text-sm">
+                     <span className="text-gray-500 block text-xs uppercase font-semibold">Último NSU</span>
+                     <span className="font-mono text-gray-800">{company.lastNSU}</span>
                    </div>
                 </div>
               </div>

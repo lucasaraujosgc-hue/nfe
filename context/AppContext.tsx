@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, ReactNode, useEffect } from 'react';
 import { Company, Invoice } from '../types';
 import { MOCK_COMPANIES, MOCK_INVOICES } from '../constants';
+import { buildDistDFeInt } from '../utils/nfeXmlBuilders';
 
 interface AppContextType {
   companies: Company[];
@@ -16,12 +17,20 @@ interface AppContextType {
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
 
-const DB_KEY = 'nfe_manager_db_v3'; // Incrementado para garantir estrutura nova
+const DB_KEY = 'nfe_manager_db_v4'; // Incrementado para incluir lastNSU
 
 export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [companies, setCompanies] = useState<Company[]>(() => {
     const saved = localStorage.getItem(DB_KEY);
-    return saved ? JSON.parse(saved).companies : MOCK_COMPANIES;
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      // Migração: Garante que empresas antigas tenham o campo lastNSU
+      return parsed.companies.map((c: any) => ({
+        ...c,
+        lastNSU: c.lastNSU || '0'
+      }));
+    }
+    return MOCK_COMPANIES;
   });
 
   const [invoices, setInvoices] = useState<Invoice[]>(() => {
@@ -42,7 +51,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   }, [companies, invoices]);
 
   const addCompany = (company: Company) => {
-    setCompanies(prev => [...prev, company]);
+    // Garante que nova empresa comece com NSU 0
+    setCompanies(prev => [...prev, { ...company, lastNSU: '0' }]);
   };
 
   const updateCompany = (updatedCompany: Company) => {
@@ -51,7 +61,6 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   const removeCompany = (id: string) => {
     setCompanies(prev => prev.filter(c => c.id !== id));
-    // Opcional: Remover notas fiscais associadas a essa empresa
     setInvoices(prev => prev.filter(inv => inv.companyId !== id));
   };
 
@@ -61,7 +70,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     ));
   };
 
-  // Implementação REAL de busca (Requer Backend)
+  // Implementação da Lógica SEFAZ (NT 2014.002)
   const searchInvoices = async (companyId: string) => {
     setIsLoading(true);
     setError(null);
@@ -70,40 +79,79 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       const company = companies.find(c => c.id === companyId);
       if (!company) throw new Error("Empresa não encontrada");
 
-      // EM PRODUÇÃO: A URL abaixo deve apontar para o seu backend real (Node/Python/PHP)
-      // O Backend deve possuir o certificado pfx decifrado para comunicar com a SEFAZ.
-      const response = await fetch('http://localhost:3000/api/nfe/consultar-destinadas', {
+      // 1. Gera o XML conforme especificação técnica
+      const xmlBody = buildDistDFeInt(company.cnpj, company.lastNSU);
+
+      console.log('Enviando XML para API:', xmlBody);
+
+      // 2. Envia para o Backend (que fará a conexão SSL Mutual com a SEFAZ)
+      // Nota: Substitua a URL abaixo pelo seu endpoint real em produção
+      const response = await fetch('http://localhost:3000/api/nfe/dist-dfe', {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${localStorage.getItem('token') || ''}` // Exemplo de auth
+          'Content-Type': 'application/xml', // Ou application/json se você encapsular o XML
+          'Authorization': `Bearer ${localStorage.getItem('nfe_manager_auth_token') || ''}`
         },
         body: JSON.stringify({
-          cnpj: company.cnpj,
-          // Nota: O certificado físico não é enviado aqui por JSON, 
-          // ele deve ter sido enviado via upload prévio ou estar configurado no servidor.
+           xml: xmlBody,
+           certificateId: company.id // Backend usa isso para pegar o .pfx correto
         })
       });
 
       if (!response.ok) {
-        throw new Error(`Erro na comunicação com servidor: ${response.statusText}`);
+        // Simulação de erro de rede ou backend offline
+        throw new Error(`Erro de comunicação (HTTP ${response.status})`);
       }
 
       const data = await response.json();
       
-      // Assume que o backend retorna um array de notas novas
-      const newInvoices: Invoice[] = data.invoices;
-      
-      // Mescla com as existentes evitando duplicatas
-      setInvoices(prev => {
-        const existingIds = new Set(prev.map(i => i.accessKey));
-        const uniqueNew = newInvoices.filter(i => !existingIds.has(i.accessKey));
-        return [...uniqueNew, ...prev];
-      });
+      // 3. Tratamento dos Códigos de Retorno (cStat)
+      // 138: Documento localizado
+      // 137: Nenhum documento localizado
+      if (data.cStat === '138' && data.docs) {
+         const newInvoices: Invoice[] = data.docs.map((doc: any) => ({
+             // Mapeamento do retorno do backend para o tipo Invoice
+             id: doc.chave,
+             companyId: companyId,
+             accessKey: doc.chave,
+             nsu: doc.nsu,
+             numero: doc.numero,
+             serie: doc.serie,
+             emitenteName: doc.nomeEmitente,
+             emitenteCNPJ: doc.cnpjEmitente,
+             emissionDate: doc.dataEmissao,
+             amount: parseFloat(doc.valorTotal),
+             status: 'authorized',
+             downloaded: false
+         }));
+
+         // Atualiza o lastNSU da empresa com o maior NSU encontrado neste lote
+         const maxNSU = newInvoices.reduce((max, inv) => {
+            const current = parseInt(inv.nsu);
+            return current > max ? current : max;
+         }, parseInt(company.lastNSU));
+
+         updateCompany({ ...company, lastNSU: maxNSU.toString() });
+
+         // Salva as notas
+         setInvoices(prev => {
+            const existingIds = new Set(prev.map(i => i.accessKey));
+            const uniqueNew = newInvoices.filter(i => !existingIds.has(i.accessKey));
+            return [...uniqueNew, ...prev];
+         });
+
+      } else if (data.cStat === '137') {
+         // Nenhum documento novo, apenas informa
+         console.info('Nenhum documento novo localizado (cStat 137).');
+         // Opcional: Avisar usuário visualmente
+      } else {
+         // Outros erros (632, etc)
+         throw new Error(`Erro SEFAZ: ${data.xMotivo} (cStat: ${data.cStat})`);
+      }
 
     } catch (err: any) {
-      console.error("Falha na busca real:", err);
-      setError("Não foi possível conectar ao servidor de NFe. Verifique se o Backend está rodando.");
+      console.error("Falha na busca:", err);
+      setError("Não foi possível buscar na SEFAZ. Verifique se o Backend está configurado e rodando.");
     } finally {
       setIsLoading(false);
     }
