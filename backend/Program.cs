@@ -6,14 +6,13 @@ using System.Xml.Linq;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using Microsoft.AspNetCore.Http;
-using Microsoft.AspNetCore.Hosting; // Ensure this is available
+using Microsoft.AspNetCore.Hosting; 
 
 var builder = WebApplication.CreateBuilder(args);
 
-// --- FORÇAR PORTA 5000 (CRUCIAL PARA O PROXY DO VITE) ---
+// --- FORÇAR PORTA 5000 ---
 builder.WebHost.ConfigureKestrel(serverOptions =>
 {
-    // Escuta em todos os IPs (0.0.0.0) na porta 5000
     serverOptions.ListenAnyIP(5000);
 });
 
@@ -45,9 +44,7 @@ if (isDocker)
 }
 else
 {
-    // Como mudamos o script para rodar dentro da pasta backend, o diretório atual é o do projeto
     var currentDir = Directory.GetCurrentDirectory();
-    // Salva em uma pasta acima ou na própria pasta para facilitar debug
     BaseDataPath = Path.Combine(currentDir, "local_storage", "data");
     BaseCertPath = Path.Combine(currentDir, "local_storage", "certificates");
     Console.WriteLine($"[INFO] Modo Local. Salvando dados em: {BaseDataPath}");
@@ -81,7 +78,6 @@ app.MapPost("/api/upload-cert", async (HttpContext context) =>
         var safeFileName = fileName.Replace(" ", "_");
         var filePath = Path.Combine(BaseCertPath, safeFileName);
         
-        // Assegurar diretório antes de salvar
         if (!Directory.Exists(BaseCertPath)) Directory.CreateDirectory(BaseCertPath);
         if (File.Exists(filePath)) File.Delete(filePath);
 
@@ -117,7 +113,6 @@ app.MapPost("/api/db", async (HttpContext context) =>
         
         if (!Directory.Exists(BaseDataPath)) Directory.CreateDirectory(BaseDataPath);
         
-        // Validar e formatar JSON
         var parsed = JsonConvert.DeserializeObject(body);
         var indented = JsonConvert.SerializeObject(parsed, Formatting.Indented);
 
@@ -153,7 +148,6 @@ app.MapPost("/api/sefaz/dist-dfe", async (HttpContext context) =>
         string certName = company["certificateName"]?.ToString() ?? "";
         var certPath = Path.Combine(BaseCertPath, certName);
         
-        // Fallback de nome (com/sem underscore)
         if (!File.Exists(certPath))
         {
             var altPath = Path.Combine(BaseCertPath, certName.Replace(" ", "_"));
@@ -185,6 +179,9 @@ app.MapPost("/api/sefaz/dist-dfe", async (HttpContext context) =>
              }
         }
 
+        // Construção do Envelope SOAP
+        // IMPORTANTE: Remover nfeDadosMsg do namespace se a SEFAZ esperar payload direto, 
+        // mas a NT 2014.002 define nfeDadosMsg como wrapper.
         var soapEnvelope = $@"<soap12:Envelope xmlns:xsi=""http://www.w3.org/2001/XMLSchema-instance"" xmlns:xsd=""http://www.w3.org/2001/XMLSchema"" xmlns:soap12=""http://www.w3.org/2003/05/soap-envelope"">
             <soap12:Body>
                 <nfeDistDFeInteresse xmlns=""http://www.portalfiscal.inf.br/nfe"">
@@ -201,16 +198,25 @@ app.MapPost("/api/sefaz/dist-dfe", async (HttpContext context) =>
         client.Timeout = TimeSpan.FromSeconds(30);
         
         var url = "https://www1.nfe.fazenda.gov.br/NFeDistribuicaoDFe/NFeDistribuicaoDFe.asmx";
+        
+        // CORREÇÃO CRÍTICA: Configurar Action no Content-Type para SOAP 1.2
         var content = new StringContent(soapEnvelope, Encoding.UTF8, "application/soap+xml");
+        content.Headers.ContentType.Parameters.Add(new System.Net.Http.Headers.NameValueHeaderValue("action", "\"http://www.portalfiscal.inf.br/nfe/nfeDistDFeInteresse\""));
+
+        Console.WriteLine($"-> Enviando requisição SOAP para {url}...");
 
         var response = await client.PostAsync(url, content);
         var responseXmlStr = await response.Content.ReadAsStringAsync();
 
+        // Se der erro HTTP, retornamos o corpo do erro para debug no frontend
         if (!response.IsSuccessStatusCode)
         {
-            Console.WriteLine($"[SEFAZ HTTP ERRO] {response.StatusCode}");
-            return Results.StatusCode((int)response.StatusCode);
+            Console.WriteLine($"[SEFAZ HTTP ERRO {response.StatusCode}]: {responseXmlStr}");
+            // Retorna o XML de erro da SEFAZ dentro de um JSON ProblemDetails customizado
+            return Results.Problem(detail: $"SEFAZ retornou {response.StatusCode}. Detalhes: {responseXmlStr}", statusCode: (int)response.StatusCode);
         }
+
+        Console.WriteLine("-> Resposta SEFAZ recebida. Processando...");
 
         var doc = XDocument.Parse(responseXmlStr);
         XNamespace nsSoap = "http://www.w3.org/2003/05/soap-envelope";
@@ -219,22 +225,35 @@ app.MapPost("/api/sefaz/dist-dfe", async (HttpContext context) =>
         var body = doc.Descendants(nsSoap + "Body").FirstOrDefault();
         var retDistDFeInt = body?.Descendants(nsNfe + "retDistDFeInt").FirstOrDefault();
 
-        if (retDistDFeInt == null) return Results.Problem("XML de resposta da SEFAZ inválido.");
+        // Se não achou retDistDFeInt diretamente, tenta procurar sem namespace ou com namespace do envelope
+        if (retDistDFeInt == null) 
+        {
+            retDistDFeInt = doc.Descendants().FirstOrDefault(x => x.Name.LocalName == "retDistDFeInt");
+        }
 
-        var cStat = retDistDFeInt.Element(nsNfe + "cStat")?.Value;
-        var xMotivo = retDistDFeInt.Element(nsNfe + "xMotivo")?.Value;
-        var maxNSU = retDistDFeInt.Element(nsNfe + "maxNSU")?.Value;
+        if (retDistDFeInt == null) 
+        {
+            Console.WriteLine($"[ERRO XML] Resposta inesperada: {responseXmlStr}");
+            return Results.Problem($"XML de resposta da SEFAZ inválido ou inesperado. Veja logs.");
+        }
+
+        var cStat = retDistDFeInt.Element(nsNfe + "cStat")?.Value ?? retDistDFeInt.Element("cStat")?.Value;
+        var xMotivo = retDistDFeInt.Element(nsNfe + "xMotivo")?.Value ?? retDistDFeInt.Element("xMotivo")?.Value;
+        var maxNSU = retDistDFeInt.Element(nsNfe + "maxNSU")?.Value ?? retDistDFeInt.Element("maxNSU")?.Value;
         
         Console.WriteLine($"[SEFAZ] Status: {cStat} - {xMotivo}");
 
         var processedInvoices = new List<object>();
 
+        // cStat 138: Documentos localizados
         if (cStat == "138") 
         {
-            var lote = retDistDFeInt.Element(nsNfe + "loteDistDFeInt");
+            var lote = retDistDFeInt.Element(nsNfe + "loteDistDFeInt") ?? retDistDFeInt.Element("loteDistDFeInt");
             if (lote != null)
             {
-                foreach (var docZip in lote.Elements(nsNfe + "docZip"))
+                var docZips = lote.Elements(nsNfe + "docZip").Any() ? lote.Elements(nsNfe + "docZip") : lote.Elements("docZip");
+                
+                foreach (var docZip in docZips)
                 {
                     try {
                         var nsu = docZip.Attribute("NSU")?.Value;
@@ -243,16 +262,18 @@ app.MapPost("/api/sefaz/dist-dfe", async (HttpContext context) =>
                         var xmlContent = DecompressGZip(base64Content);
                         var docXml = XDocument.Parse(xmlContent);
 
-                        if (schema == "resNFe_v1.01.xsd")
+                        // Processamento simplificado dos tipos de documentos
+                        if (schema != null && schema.Contains("resNFe"))
                         {
                             var resNFe = docXml.Root;
+                            var nsRes = resNFe.GetDefaultNamespace();
                             processedInvoices.Add(new {
-                                accessKey = resNFe?.Element(nsNfe + "chNFe")?.Value,
-                                emitenteCNPJ = resNFe?.Element(nsNfe + "CNPJ")?.Value ?? resNFe?.Element(nsNfe + "CPF")?.Value,
-                                emitenteName = resNFe?.Element(nsNfe + "xNome")?.Value,
-                                emissionDate = resNFe?.Element(nsNfe + "dhEmi")?.Value,
-                                amount = double.Parse(resNFe?.Element(nsNfe + "vNF")?.Value?.Replace(".", ",") ?? "0"),
-                                status = resNFe?.Element(nsNfe + "cSitNFe")?.Value == "1" ? "authorized" : "canceled",
+                                accessKey = resNFe.Element(nsRes + "chNFe")?.Value,
+                                emitenteCNPJ = resNFe.Element(nsRes + "CNPJ")?.Value ?? resNFe.Element(nsRes + "CPF")?.Value,
+                                emitenteName = resNFe.Element(nsRes + "xNome")?.Value,
+                                emissionDate = resNFe.Element(nsRes + "dhEmi")?.Value,
+                                amount = double.Parse(resNFe.Element(nsRes + "vNF")?.Value?.Replace(".", ",") ?? "0"),
+                                status = resNFe.Element(nsRes + "cSitNFe")?.Value == "1" ? "authorized" : "canceled",
                                 nsu = nsu,
                                 numero = "000",
                                 serie = "0",
@@ -261,29 +282,35 @@ app.MapPost("/api/sefaz/dist-dfe", async (HttpContext context) =>
                                 downloaded = false
                             });
                         }
-                        else if (schema == "procNFe_v4.00.xsd")
+                        else if (schema != null && schema.Contains("procNFe"))
                         {
-                            var nfe = docXml.Descendants(nsNfe + "NFe").FirstOrDefault();
-                            var infNFe = nfe?.Element(nsNfe + "infNFe");
-                            var ide = infNFe?.Element(nsNfe + "ide");
-                            var emit = infNFe?.Element(nsNfe + "emit");
-                            var total = infNFe?.Element(nsNfe + "total")?.Element(nsNfe + "ICMSTot");
-                            var prot = docXml.Descendants(nsNfe + "protNFe").FirstOrDefault()?.Element(nsNfe + "infProt");
+                            // Lógica completa para NFe processada
+                            var nfeRoot = docXml.Root; // nfeProc
+                            var nsProc = nfeRoot.GetDefaultNamespace();
+                            
+                            var nfe = docXml.Descendants(nsProc + "NFe").FirstOrDefault();
+                            var nsNFeLocal = nfe?.GetDefaultNamespace() ?? nsProc;
+                            
+                            var infNFe = nfe?.Element(nsNFeLocal + "infNFe");
+                            var ide = infNFe?.Element(nsNFeLocal + "ide");
+                            var emit = infNFe?.Element(nsNFeLocal + "emit");
+                            var total = infNFe?.Element(nsNFeLocal + "total")?.Element(nsNFeLocal + "ICMSTot");
+                            var prot = docXml.Descendants(nsProc + "protNFe").FirstOrDefault()?.Element(nsProc + "infProt");
 
                             processedInvoices.Add(new
                             {
-                                accessKey = prot?.Element(nsNfe + "chNFe")?.Value,
-                                emitenteCNPJ = emit?.Element(nsNfe + "CNPJ")?.Value,
-                                emitenteName = emit?.Element(nsNfe + "xNome")?.Value,
-                                emissionDate = ide?.Element(nsNfe + "dhEmi")?.Value,
-                                authorizationDate = prot?.Element(nsNfe + "dhRecbto")?.Value,
-                                amount = double.Parse(total?.Element(nsNfe + "vNF")?.Value?.Replace(".", ",") ?? "0"),
+                                accessKey = prot?.Element(nsProc + "chNFe")?.Value,
+                                emitenteCNPJ = emit?.Element(nsNFeLocal + "CNPJ")?.Value,
+                                emitenteName = emit?.Element(nsNFeLocal + "xNome")?.Value,
+                                emissionDate = ide?.Element(nsNFeLocal + "dhEmi")?.Value,
+                                authorizationDate = prot?.Element(nsProc + "dhRecbto")?.Value,
+                                amount = double.Parse(total?.Element(nsNFeLocal + "vNF")?.Value?.Replace(".", ",") ?? "0"),
                                 status = "authorized",
                                 nsu = nsu,
-                                numero = ide?.Element(nsNfe + "nNF")?.Value,
-                                serie = ide?.Element(nsNfe + "serie")?.Value,
-                                uf = emit?.Element(nsNfe + "enderEmit")?.Element(nsNfe + "UF")?.Value,
-                                operationType = ide?.Element(nsNfe + "tpNF")?.Value == "0" ? "Entrada" : "Saida",
+                                numero = ide?.Element(nsNFeLocal + "nNF")?.Value,
+                                serie = ide?.Element(nsNFeLocal + "serie")?.Value,
+                                uf = emit?.Element(nsNFeLocal + "enderEmit")?.Element(nsNFeLocal + "UF")?.Value,
+                                operationType = ide?.Element(nsNFeLocal + "tpNF")?.Value == "0" ? "Entrada" : "Saida",
                                 companyId = companyId,
                                 id = $"inv-{Guid.NewGuid()}",
                                 downloaded = true
@@ -305,7 +332,7 @@ app.MapPost("/api/sefaz/dist-dfe", async (HttpContext context) =>
     }
 });
 
-app.Run(); // Use padrão do launchSettings.json ou Kestrel configurado acima
+app.Run();
 
 string DecompressGZip(string base64)
 {
