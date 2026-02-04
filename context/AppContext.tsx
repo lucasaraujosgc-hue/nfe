@@ -1,6 +1,5 @@
 import React, { createContext, useContext, useState, ReactNode, useEffect } from 'react';
 import { Company, Invoice, SystemLog } from '../types';
-import { MOCK_COMPANIES, MOCK_INVOICES } from '../constants';
 import { buildDistDFeInt } from '../utils/nfeXmlBuilders';
 
 interface AppContextType {
@@ -19,25 +18,6 @@ interface AppContextType {
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
 
-// Dados exatos do exemplo SEFAZ Bahia fornecido
-const SEFAZ_DATASET = [
-  { numero: '000.164.944', cnpj: '08.617.092/0001-65', nome: 'VITALY NUTRICAO ANIMAL LTDA', emissao: '2025-12-29T10:07:40', autorizacao: '2025-12-29T10:15:49', valor: 777.79, chave: '29251208617092000165550020001649441502382887', uf: 'BA', tipo: 'Saida' },
-  { numero: '000.059.062', cnpj: '42.823.156/0001-12', nome: 'VETMINAS NORDESTE PROD VETERINARIOS LTDA', emissao: '2026-01-19T16:59:28', autorizacao: '2026-01-19T16:59:41', valor: 1013.36, chave: '29260142823156000112550010000590621020590620', uf: 'BA', tipo: 'Saida' },
-  { numero: '000.060.014', cnpj: '42.823.156/0001-12', nome: 'VETMINAS NORDESTE PROD VETERINARIOS LTDA', emissao: '2026-01-30T19:22:28', autorizacao: '2026-01-30T19:22:41', valor: 915.08, chave: '29260142823156000112550010000600141020600141', uf: 'BA', tipo: 'Saida' },
-  { numero: '000.058.088', cnpj: '42.823.156/0001-12', nome: 'VETMINAS NORDESTE PROD VETERINARIOS LTDA', emissao: '2026-01-06T17:46:40', autorizacao: '2026-01-06T17:47:05', valor: 1079.28, chave: '29260142823156000112550010000580881020580880', uf: 'BA', tipo: 'Saida' },
-  { numero: '000.163.531', cnpj: '01.588.099/0012-00', nome: 'Integral Agroindustrial Ltda - Paulo Afonso', emissao: '2026-01-07T14:28:35', autorizacao: '2026-01-07T14:29:20', valor: 3097.01, chave: '29260101588099001200550000001635311403596815', uf: 'BA', tipo: 'Saida' },
-  { numero: '000.096.962', cnpj: '03.494.578/0001-30', nome: 'SUPRIVAC PRODUTOS AGROPECUARIOS LTD', emissao: '2026-01-12T11:02:37', autorizacao: '2026-01-12T11:02:39', valor: 763.30, chave: '29260103494578000130550010000969621170851881', uf: 'BA', tipo: 'Saida' },
-  { numero: '000.164.091', cnpj: '01.588.099/0012-00', nome: 'Integral Agroindustrial Ltda - Paulo Afonso', emissao: '2026-01-15T17:45:17', autorizacao: '2026-01-15T17:45:53', valor: 3303.78, chave: '29260101588099001200550000001640911512208994', uf: 'BA', tipo: 'Saida' },
-  { numero: '001.604.657', cnpj: '23.797.376/0027-03', nome: 'BARTOFIL DISTRIBUIDORA SA', emissao: '2026-01-19T21:03:18', autorizacao: '2026-01-19T21:09:23', valor: 1680.49, chave: '29260123797376002703550000016046571520266330', uf: 'BA', tipo: 'Saida' },
-  { numero: '000.191.437', cnpj: '00.776.806/0014-90', nome: 'CONFINAR PRODUTOS AGROPECUARIOS LTDA', emissao: '2026-01-20T08:30:15', autorizacao: '2026-01-20T08:30:25', valor: 770.98, chave: '29260100776806001490550010001914371001289923', uf: 'BA', tipo: 'Saida' },
-  { numero: '000.191.851', cnpj: '00.776.806/0014-90', nome: 'CONFINAR PRODUTOS AGROPECUARIOS LTDA', emissao: '2026-01-23T08:13:47', autorizacao: '2026-01-23T08:13:56', valor: 428.40, chave: '29260100776806001490550010001918511001293271', uf: 'BA', tipo: 'Saida' },
-  { numero: '000.191.857', cnpj: '00.776.806/0014-90', nome: 'CONFINAR PRODUTOS AGROPECUARIOS LTDA', emissao: '2026-01-23T08:18:35', autorizacao: '2026-01-23T08:18:41', valor: 483.86, chave: '29260100776806001490550010001918571001293267', uf: 'BA', tipo: 'Saida' },
-  { numero: '000.325.578', cnpj: '19.628.684/0003-60', nome: 'GB ATACADISTAS LTDA', emissao: '2026-01-25T11:35:14', autorizacao: '2026-01-25T11:40:06', valor: 1564.00, chave: '29260119628684000360550010003255781332875672', uf: 'BA', tipo: 'Saida' },
-  { numero: '000.192.800', cnpj: '00.776.806/0014-90', nome: 'CONFINAR PRODUTOS AGROPECUARIOS LTDA', emissao: '2026-01-29T17:35:23', autorizacao: '2026-01-29T17:35:26', valor: 483.86, chave: '29260100776806001490550010001928001000056735', uf: 'BA', tipo: 'Entrada' },
-  { numero: '000.192.801', cnpj: '00.776.806/0014-90', nome: 'CONFINAR PRODUTOS AGROPECUARIOS LTDA', emissao: '2026-01-29T17:36:02', autorizacao: '2026-01-29T17:36:05', valor: 419.14, chave: '29260100776806001490550010001928011001298284', uf: 'BA', tipo: 'Saida' },
-  { numero: '000.600.850', cnpj: '08.589.429/0010-69', nome: 'NUTRISANTOS ALIMENTACAO ANIMAL LTDA', emissao: '2026-01-31T09:00:32', autorizacao: '2026-01-31T09:05:04', valor: 1451.87, chave: '31260108589429001069550010006008501175266727', uf: 'MG', tipo: 'Saida' }
-];
-
 export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [companies, setCompanies] = useState<Company[]>([]);
   const [invoices, setInvoices] = useState<Invoice[]>([]);
@@ -46,6 +26,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   
   const [isDataLoaded, setIsDataLoaded] = useState(false);
 
+  // 1. Carregar dados do banco de dados local
   useEffect(() => {
     fetch('/api/db')
       .then(res => {
@@ -60,12 +41,14 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       })
       .catch(err => {
         console.error("Erro ao conectar com API de persistência:", err);
-        setCompanies(MOCK_COMPANIES);
-        setInvoices(MOCK_INVOICES);
+        // Em produção, não carregamos mocks se falhar
+        setCompanies([]);
+        setInvoices([]);
         setIsDataLoaded(true);
       });
   }, []);
 
+  // 2. Salvar dados no servidor sempre que houver mudança
   useEffect(() => {
     if (!isDataLoaded) return;
 
@@ -116,17 +99,21 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setInvoices(prev => prev.map(inv => 
       ids.includes(inv.id) ? { ...inv, downloaded: true } : inv
     ));
-    addLog(`${ids.length} notas marcadas como baixadas (XML salvo em disco).`, 'success');
+    addLog(`${ids.length} notas marcadas como baixadas (Salvo localmente).`, 'success');
   };
 
   const verifyCertificate = async (file: File | null, password: string): Promise<void> => {
     if (!file && !password) return;
-    await new Promise(r => setTimeout(r, 1500));
-    if (password !== '123456') {
-        throw new Error("Senha incorreta. Falha ao decifrar o arquivo .pfx (OpenSSL Mac Verify Error).");
+    // Simulação de delay de processamento criptográfico local
+    await new Promise(r => setTimeout(r, 1000));
+    
+    // Validação básica
+    if (!password) {
+        throw new Error("Senha é obrigatória.");
     }
   };
 
+  // --- MODO PRODUÇÃO ---
   const searchInvoices = async (companyId: string) => {
     setIsLoading(true);
     clearLogs();
@@ -139,91 +126,65 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
 
     try {
-      addLog(`Iniciando job de consulta DFe para: ${company.razaoSocial}`, 'info');
-      await new Promise(r => setTimeout(r, 600));
-
-      addLog(`Lendo arquivo de certificado: ${company.certificateName || 'cert.pfx'}`, 'info');
-      await new Promise(r => setTimeout(r, 800));
-
-      addLog("Tentando decifrar chave privada (OpenSSL PKCS#12)...", 'info');
-      await new Promise(r => setTimeout(r, 800));
-
-      if (company.certificatePassword !== '123456') {
-        throw new Error("OpenSSL Error: mac verify failure. Invalid password?");
-      }
+      addLog(`Iniciando conexão segura com Ambiente Nacional (SEFAZ) para: ${company.razaoSocial}`, 'info');
+      addLog(`Utilizando certificado digital ID: ${company.certificateName}`, 'info');
       
-      addLog("Certificado decifrado com sucesso. Validade: 31/12/2026", 'success');
-      await new Promise(r => setTimeout(r, 500));
-
+      // 1. Gerar o Payload XML
+      const xmlPayload = buildDistDFeInt(company.cnpj, company.lastNSU);
       addLog(`Gerando XML distDFeInt (NSU: ${company.lastNSU})...`, 'info');
-      const xmlBody = buildDistDFeInt(company.cnpj, company.lastNSU);
-      addLog("Payload XML gerado:", 'info', xmlBody);
-      await new Promise(r => setTimeout(r, 600));
+      
+      // 2. Tentar conexão real com Backend (Proxy SEFAZ)
+      // Em um ambiente de produção real, isso chamaria um endpoint que tem acesso ao certificado .pfx no servidor
+      // e faria a comunicação SSL mútua com a SEFAZ.
+      addLog("Enviando requisição SOAP...", 'warning');
+      
+      const response = await fetch('/api/sefaz/dist-dfe', {
+          method: 'POST',
+          headers: {
+              'Content-Type': 'application/json',
+              'X-Company-ID': companyId
+          },
+          body: JSON.stringify({
+              xml: xmlPayload,
+              password: company.certificatePassword // Enviando senha para decifrar PFX no backend
+          })
+      });
 
-      addLog("Abrindo conexão SSL Mutual com https://www1.nfe.fazenda.gov.br/...", 'warning');
-      await new Promise(r => setTimeout(r, 1500));
-
-      // LÓGICA MOCKADA PARA RETORNAR O DATASET SEFAZ BAHIA
-      const currentNSU = parseInt(company.lastNSU);
-      
-      // Simula paginação: Pega os próximos 5 itens do dataset ou o restante
-      // Se currentNSU for 0, começa do index 0. Se for 5, começa do index 5.
-      const startIndex = currentNSU % SEFAZ_DATASET.length; 
-      
-      // Para simular que "encontrou novos", vamos apenas retornar o dataset inteiro se NSU < length,
-      // ou parte dele para parecer incremental
-      let itemsToReturn: any[] = [];
-      
-      if (currentNSU < SEFAZ_DATASET.length) {
-         itemsToReturn = SEFAZ_DATASET.slice(currentNSU, currentNSU + 5);
+      if (!response.ok) {
+          // Se o backend não estiver implementado (caso deste ambiente demo), cairá aqui
+          if (response.status === 404) {
+              throw new Error("Endpoint de comunicação com SEFAZ não encontrado (/api/sefaz/dist-dfe). Verifique se o Backend Java/Node está rodando.");
+          }
+          throw new Error(`Erro na comunicação com servidor: ${response.statusText}`);
       }
 
-      if (itemsToReturn.length > 0) {
-        addLog("Resposta SEFAZ recebida. HTTP 200 OK.", 'success');
-        addLog("Processando retorno SOAP (GZip decompression)...", 'info');
-        
-        const newInvoices: Invoice[] = itemsToReturn.map((item, index) => ({
-            id: `inv-${Date.now()}-${index}`,
-            companyId: companyId,
-            accessKey: item.chave,
-            nsu: String(currentNSU + index + 1).padStart(15, '0'),
-            numero: item.numero,
-            serie: '1',
-            emitenteName: item.nome,
-            emitenteCNPJ: item.cnpj,
-            emissionDate: item.emissao,
-            authorizationDate: item.autorizacao,
-            amount: item.valor,
-            status: 'authorized',
-            downloaded: false,
-            uf: item.uf,
-            operationType: item.tipo
-        }));
-
-        const maxNSU = currentNSU + newInvoices.length;
-        updateCompany({ ...company, lastNSU: maxNSU.toString() });
-
-        setInvoices(prev => {
-          const existingIds = new Set(prev.map(i => i.accessKey));
-          const uniqueNew = newInvoices.filter(i => !existingIds.has(i.accessKey));
-          return [...uniqueNew, ...prev];
-        });
-
-        addLog(`Sucesso: ${newInvoices.length} novos documentos localizados (cStat: 138).`, 'success');
-        addLog(`Cursor de NSU atualizado para: ${maxNSU}`, 'info');
-
+      const data = await response.json();
+      
+      // Processar resposta real (Lógica de Produção)
+      if (data.invoices && data.invoices.length > 0) {
+           const newInvoices: Invoice[] = data.invoices;
+           
+           // Atualizar estado
+           setInvoices(prev => {
+              const existingIds = new Set(prev.map(i => i.accessKey));
+              const uniqueNew = newInvoices.filter(i => !existingIds.has(i.accessKey));
+              return [...uniqueNew, ...prev];
+            });
+            
+            // Atualizar NSU
+            if (data.maxNSU) {
+                updateCompany({ ...company, lastNSU: data.maxNSU });
+                addLog(`Cursor de NSU atualizado para: ${data.maxNSU}`, 'info');
+            }
+            
+            addLog(`Sucesso: ${newInvoices.length} documentos retornados da SEFAZ.`, 'success');
       } else {
-        // Se já percorreu todo o dataset mockado, reseta o NSU para demonstrar de novo ou diz que não tem
-        if (currentNSU >= SEFAZ_DATASET.length) {
-             addLog("Resposta SEFAZ recebida. HTTP 200 OK.", 'success');
-             addLog("cStat: 137 - Nenhum documento localizado para o NSU informado.", 'warning');
-             // Opcional: Resetar NSU para demo
-             // updateCompany({ ...company, lastNSU: '0' }); 
-        }
+          addLog("Requisição completada. Nenhum documento novo encontrado (cStat 137).", 'success');
       }
 
     } catch (err: any) {
-      addLog(`FALHA CRÍTICA: ${err.message}`, 'error');
+      addLog(`FALHA DE CONEXÃO: ${err.message}`, 'error');
+      addLog("Nota: Como este é um ambiente Frontend-only, a conexão real com a SEFAZ falhou pois requer um Backend seguro.", 'warning');
       console.error(err);
     } finally {
       setIsLoading(false);

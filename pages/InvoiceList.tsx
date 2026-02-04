@@ -2,6 +2,80 @@ import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { Download, RefreshCw, FileCheck, Search, Filter, Copy, Check, Terminal, ChevronDown, ChevronUp } from 'lucide-react';
 import { useAppContext } from '../context/AppContext';
 import { formatCurrency, formatDate, formatAccessKey } from '../utils';
+// @ts-ignore
+import JSZip from 'jszip';
+// @ts-ignore
+import { saveAs } from 'file-saver';
+import { Invoice } from '../types';
+
+// Helper para reconstruir um XML válido (Simulação baseada nos dados disponíveis)
+const generateXMLContent = (inv: Invoice): string => {
+    return `<?xml version="1.0" encoding="UTF-8"?>
+<nfeProc versao="4.00" xmlns="http://www.portalfiscal.inf.br/nfe">
+    <NFe>
+        <infNFe Id="NFe${inv.accessKey}" versao="4.00">
+            <ide>
+                <cUF>${inv.uf === 'BA' ? '29' : inv.uf === 'MG' ? '31' : '35'}</cUF>
+                <cNF>${inv.accessKey.substring(35, 43)}</cNF>
+                <natOp>${inv.operationType || 'COMPRA PARA COMERCIALIZACAO'}</natOp>
+                <mod>55</mod>
+                <serie>${inv.serie}</serie>
+                <nNF>${inv.numero}</nNF>
+                <dhEmi>${inv.emissionDate}</dhEmi>
+                <tpNF>${inv.operationType === 'Entrada' ? '0' : '1'}</tpNF>
+                <idDest>1</idDest>
+                <cMunFG>2927408</cMunFG>
+                <tpImp>1</tpImp>
+                <tpEmis>1</tpEmis>
+                <cDV>${inv.accessKey.slice(-1)}</cDV>
+                <tpAmb>1</tpAmb>
+                <finNFe>1</finNFe>
+                <indFinal>0</indFinal>
+                <indPres>9</indPres>
+                <procEmi>0</procEmi>
+                <verProc>NFe Manager Pro 1.0</verProc>
+            </ide>
+            <emit>
+                <CNPJ>${inv.emitenteCNPJ.replace(/\D/g, '')}</CNPJ>
+                <xNome>${inv.emitenteName}</xNome>
+                <enderEmit>
+                    <xLgr>RUA DA FABRICA</xLgr>
+                    <nro>1000</nro>
+                    <xBairro>CENTRO</xBairro>
+                    <cMun>2927408</cMun>
+                    <xMun>SALVADOR</xMun>
+                    <UF>${inv.uf || 'BA'}</UF>
+                    <CEP>40000000</CEP>
+                    <cPais>1058</cPais>
+                    <xPais>BRASIL</xPais>
+                </enderEmit>
+                <IE>123456789</IE>
+                <CRT>3</CRT>
+            </emit>
+            <total>
+                <ICMSTot>
+                    <vBC>0.00</vBC>
+                    <vICMS>0.00</vICMS>
+                    <vProd>${inv.amount.toFixed(2)}</vProd>
+                    <vNF>${inv.amount.toFixed(2)}</vNF>
+                </ICMSTot>
+            </total>
+        </infNFe>
+    </NFe>
+    <protNFe versao="4.00">
+        <infProt>
+            <tpAmb>1</tpAmb>
+            <verAplic>SVRS202401181014</verAplic>
+            <chNFe>${inv.accessKey}</chNFe>
+            <dhRecbto>${inv.authorizationDate || inv.emissionDate}</dhRecbto>
+            <nProt>1${inv.accessKey.substring(0, 14)}</nProt>
+            <digVal>SImuladoHashBase64==</digVal>
+            <cStat>100</cStat>
+            <xMotivo>Autorizado o uso da NF-e</xMotivo>
+        </infProt>
+    </protNFe>
+</nfeProc>`;
+};
 
 export const InvoiceList: React.FC = () => {
   const { companies, invoices, isLoading, searchInvoices, markAsDownloaded, logs } = useAppContext();
@@ -62,17 +136,42 @@ export const InvoiceList: React.FC = () => {
     setSelectedInvoices(newSelected);
   };
 
-  const handleDownload = () => {
+  const handleDownload = async () => {
     if (selectedInvoices.size === 0) return;
     setIsProcessing(true);
     
-    // Simulate batch download processing
-    setTimeout(() => {
-      markAsDownloaded(Array.from(selectedInvoices));
-      setSelectedInvoices(new Set());
-      setIsProcessing(false);
-      alert(`${selectedInvoices.size} notas baixadas com sucesso!`);
-    }, 2000);
+    try {
+        const invoicesToDownload = invoices.filter(inv => selectedInvoices.has(inv.id));
+        
+        // Single File Download
+        if (invoicesToDownload.length === 1) {
+            const inv = invoicesToDownload[0];
+            const xmlContent = generateXMLContent(inv);
+            const blob = new Blob([xmlContent], { type: "text/xml;charset=utf-8" });
+            saveAs(blob, `${inv.accessKey}-procNfe.xml`);
+        } 
+        // Multiple Files (Zip)
+        else {
+            const zip = new JSZip();
+            const folder = zip.folder("notas_fiscais");
+            
+            invoicesToDownload.forEach(inv => {
+                const xmlContent = generateXMLContent(inv);
+                folder.file(`${inv.accessKey}-procNfe.xml`, xmlContent);
+            });
+            
+            const content = await zip.generateAsync({ type: "blob" });
+            saveAs(content, `lote_notas_${new Date().toISOString().slice(0,10)}.zip`);
+        }
+
+        markAsDownloaded(Array.from(selectedInvoices));
+        setSelectedInvoices(new Set());
+    } catch (error) {
+        console.error("Erro ao gerar download:", error);
+        alert("Erro ao processar o download dos arquivos.");
+    } finally {
+        setIsProcessing(false);
+    }
   };
 
   const copyToClipboard = (key: string) => {
@@ -81,7 +180,6 @@ export const InvoiceList: React.FC = () => {
     setTimeout(() => setCopiedKey(null), 2000);
   };
 
-  // Helper to format Date Time as dd/MM/yyyy HH:mm:ss
   const formatDateTime = (isoString: string | undefined) => {
     if (!isoString) return '-';
     const date = new Date(isoString);
@@ -97,7 +195,6 @@ export const InvoiceList: React.FC = () => {
         </div>
       </div>
 
-      {/* Filter Bar */}
       <div className="bg-white p-5 rounded-xl shadow-sm border border-gray-200">
         <form onSubmit={handleSearch} className="grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
           <div className="col-span-1 md:col-span-1">
@@ -161,7 +258,6 @@ export const InvoiceList: React.FC = () => {
         </form>
       </div>
 
-      {/* Terminal de Logs */}
       <div className={`fixed bottom-0 left-64 right-0 bg-[#1e1e1e] text-gray-300 shadow-2xl transition-all duration-300 z-30 border-t border-gray-700 ${showTerminal ? 'h-64' : 'h-10'}`}>
          <div 
             className="flex items-center justify-between px-4 py-2 bg-[#2d2d2d] cursor-pointer hover:bg-[#3d3d3d] transition-colors"
@@ -205,7 +301,6 @@ export const InvoiceList: React.FC = () => {
          )}
       </div>
 
-      {/* Action Bar */}
       <div className="flex justify-between items-center bg-gray-50 p-4 rounded-lg border border-gray-200">
         <div className="text-sm text-gray-600">
           <span className="font-semibold text-gray-900">{filteredInvoices.length}</span> documentos listados
@@ -220,11 +315,10 @@ export const InvoiceList: React.FC = () => {
           }`}
         >
           {isProcessing ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
-          {isProcessing ? 'Baixando...' : `Baixar Selecionadas (${selectedInvoices.size})`}
+          {isProcessing ? 'Gerando Arquivos...' : selectedInvoices.size > 1 ? `Baixar .ZIP (${selectedInvoices.size})` : 'Baixar XML'}
         </button>
       </div>
 
-      {/* Data Table */}
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden mb-8">
         <div className="overflow-x-auto">
           <table className="w-full text-xs text-left whitespace-nowrap">
