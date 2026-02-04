@@ -1,11 +1,11 @@
 import React, { useState } from 'react';
-import { Upload, Building2, CheckCircle, AlertCircle, ShieldCheck, Edit2, Trash2, Plus, X, Save, Lock } from 'lucide-react';
+import { Upload, Building2, CheckCircle, AlertCircle, ShieldCheck, Edit2, Trash2, Plus, X, Save, Lock, Loader2 } from 'lucide-react';
 import { formatCNPJ } from '../utils';
 import { useAppContext } from '../context/AppContext';
 import { Company } from '../types';
 
 export const CompanyRegistration: React.FC = () => {
-  const { addCompany, updateCompany, removeCompany, companies } = useAppContext();
+  const { addCompany, updateCompany, removeCompany, companies, verifyCertificate } = useAppContext();
   
   const [viewMode, setViewMode] = useState<'list' | 'form'>('list');
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -17,7 +17,11 @@ export const CompanyRegistration: React.FC = () => {
   });
   const [file, setFile] = useState<File | null>(null);
   const [password, setPassword] = useState('');
+  
+  // Feedback States
   const [successMsg, setSuccessMsg] = useState('');
+  const [errorMsg, setErrorMsg] = useState('');
+  const [isVerifying, setIsVerifying] = useState(false);
 
   const handleNew = () => {
     setFormData({ cnpj: '', razaoSocial: '', apelido: '' });
@@ -26,6 +30,7 @@ export const CompanyRegistration: React.FC = () => {
     setEditingId(null);
     setViewMode('form');
     setSuccessMsg('');
+    setErrorMsg('');
   };
 
   const handleEdit = (company: Company) => {
@@ -39,6 +44,7 @@ export const CompanyRegistration: React.FC = () => {
     setEditingId(company.id);
     setViewMode('form');
     setSuccessMsg('');
+    setErrorMsg('');
   };
 
   const handleDelete = (id: string, name: string) => {
@@ -47,54 +53,76 @@ export const CompanyRegistration: React.FC = () => {
     }
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setSuccessMsg('');
+    setErrorMsg('');
+    setIsVerifying(true);
 
-    if (editingId) {
-        const existingCompany = companies.find(c => c.id === editingId);
-        if (!existingCompany) return;
+    try {
+        if (editingId) {
+            const existingCompany = companies.find(c => c.id === editingId);
+            if (!existingCompany) {
+                setIsVerifying(false);
+                return;
+            }
 
-        const updatedCompany: Company = {
-            ...existingCompany,
-            cnpj: formData.cnpj,
-            razaoSocial: formData.razaoSocial,
-            apelido: formData.apelido,
-            certificateName: file ? file.name : existingCompany.certificateName,
-            certificateExpiry: file ? '2026-01-01' : existingCompany.certificateExpiry,
-            certificatePassword: password || existingCompany.certificatePassword, // Salva a senha para teste
-            lastNSU: existingCompany.lastNSU
-        };
-        updateCompany(updatedCompany);
-        setSuccessMsg('Empresa atualizada com sucesso!');
-    } else {
-        if (!file) {
-            alert("Certificado digital é obrigatório para cadastro.");
-            return;
+            // Se usuário trocou arquivo ou senha, precisamos validar
+            if (file || (password && password !== existingCompany.certificatePassword)) {
+                 await verifyCertificate(file, password || existingCompany.certificatePassword || '');
+            }
+
+            const updatedCompany: Company = {
+                ...existingCompany,
+                cnpj: formData.cnpj,
+                razaoSocial: formData.razaoSocial,
+                apelido: formData.apelido,
+                certificateName: file ? file.name : existingCompany.certificateName,
+                certificateExpiry: file ? '2026-01-01' : existingCompany.certificateExpiry,
+                certificatePassword: password || existingCompany.certificatePassword, 
+                lastNSU: existingCompany.lastNSU
+            };
+            updateCompany(updatedCompany);
+            setSuccessMsg('Empresa atualizada com sucesso!');
+        } else {
+            if (!file) {
+                alert("Certificado digital é obrigatório para cadastro.");
+                setIsVerifying(false);
+                return;
+            }
+            if (!password) {
+                alert("A senha do certificado é obrigatória.");
+                setIsVerifying(false);
+                return;
+            }
+
+            // Validação no Backend
+            await verifyCertificate(file, password);
+
+            const newCompany: Company = {
+                id: Date.now().toString(),
+                cnpj: formData.cnpj,
+                razaoSocial: formData.razaoSocial,
+                apelido: formData.apelido,
+                certificateName: file.name,
+                certificateExpiry: '2025-12-31', 
+                certificatePassword: password, 
+                lastNSU: '0'
+            };
+            addCompany(newCompany);
+            setSuccessMsg('Empresa cadastrada com sucesso!');
         }
-        // Para simulação, vamos exigir a senha
-        if (!password) {
-            alert("A senha do certificado é obrigatória para processamento no backend.");
-            return;
-        }
 
-        const newCompany: Company = {
-            id: Date.now().toString(),
-            cnpj: formData.cnpj,
-            razaoSocial: formData.razaoSocial,
-            apelido: formData.apelido,
-            certificateName: file.name,
-            certificateExpiry: '2025-12-31', 
-            certificatePassword: password, // Salva senha
-            lastNSU: '0'
-        };
-        addCompany(newCompany);
-        setSuccessMsg('Empresa cadastrada com sucesso!');
+        setTimeout(() => {
+            setSuccessMsg('');
+            setViewMode('list');
+        }, 1500);
+
+    } catch (error: any) {
+        setErrorMsg(error.message || "Erro desconhecido ao validar certificado.");
+    } finally {
+        setIsVerifying(false);
     }
-
-    setTimeout(() => {
-        setSuccessMsg('');
-        setViewMode('list');
-    }, 1500);
   };
 
   if (viewMode === 'list') {
@@ -197,9 +225,16 @@ export const CompanyRegistration: React.FC = () => {
 
         <div className="bg-white rounded-xl shadow-lg border border-gray-200 overflow-hidden">
             {successMsg && (
-              <div className="p-4 bg-green-50 text-green-700 flex items-center justify-center gap-2 border-b border-green-100">
+              <div className="p-4 bg-green-50 text-green-700 flex items-center justify-center gap-2 border-b border-green-100 animate-in fade-in slide-in-from-top-1">
                 <CheckCircle className="w-5 h-5" />
                 <span className="font-medium">{successMsg}</span>
+              </div>
+            )}
+
+            {errorMsg && (
+              <div className="p-4 bg-red-50 text-red-700 flex items-center justify-center gap-2 border-b border-red-100 animate-in fade-in slide-in-from-top-1">
+                <AlertCircle className="w-5 h-5" />
+                <span className="font-medium">{errorMsg}</span>
               </div>
             )}
 
@@ -291,16 +326,29 @@ export const CompanyRegistration: React.FC = () => {
                     <button
                         type="button"
                         onClick={() => setViewMode('list')}
-                        className="flex-1 px-4 py-3 bg-white text-gray-700 font-medium rounded-lg border border-gray-300 hover:bg-gray-50 transition-colors"
+                        disabled={isVerifying}
+                        className="flex-1 px-4 py-3 bg-white text-gray-700 font-medium rounded-lg border border-gray-300 hover:bg-gray-50 transition-colors disabled:opacity-50"
                     >
                         Cancelar
                     </button>
                     <button
                         type="submit"
-                        className="flex-[2] flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-700 text-white font-medium py-3 rounded-lg transition-colors shadow-md"
+                        disabled={isVerifying}
+                        className={`flex-[2] flex items-center justify-center gap-2 text-white font-medium py-3 rounded-lg transition-colors shadow-md ${
+                            isVerifying ? 'bg-blue-400 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700'
+                        }`}
                     >
-                        <Save className="w-5 h-5" />
-                        {editingId ? 'Salvar Alterações' : 'Cadastrar Empresa'}
+                        {isVerifying ? (
+                            <>
+                                <Loader2 className="w-5 h-5 animate-spin" />
+                                Verificando...
+                            </>
+                        ) : (
+                            <>
+                                <Save className="w-5 h-5" />
+                                {editingId ? 'Salvar Alterações' : 'Cadastrar Empresa'}
+                            </>
+                        )}
                     </button>
                 </div>
             </form>

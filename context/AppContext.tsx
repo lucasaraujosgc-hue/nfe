@@ -12,6 +12,7 @@ interface AppContextType {
   removeCompany: (id: string) => void;
   markAsDownloaded: (ids: string[]) => void;
   searchInvoices: (companyId: string) => Promise<void>;
+  verifyCertificate: (file: File | null, password: string) => Promise<void>;
   clearLogs: () => void;
   isLoading: boolean;
 }
@@ -104,7 +105,22 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     addLog(`${ids.length} notas marcadas como baixadas (XML salvo em disco).`, 'success');
   };
 
-  // --- SIMULAÇÃO DO BACKEND (Mantida a lógica de busca) ---
+  // --- SIMULAÇÃO DE VALIDAÇÃO DE CERTIFICADO ---
+  const verifyCertificate = async (file: File | null, password: string): Promise<void> => {
+    // Se não há arquivo (edição sem troca), não validamos nada
+    if (!file && !password) return;
+
+    // Simulação de delay de rede/processamento crypto
+    await new Promise(r => setTimeout(r, 1500));
+
+    // Validação MOCK: Aceita apenas a senha "123456"
+    // Num cenário real, aqui o backend tentaria abrir o PFX com a senha
+    if (password !== '123456') {
+        throw new Error("Senha incorreta. Falha ao decifrar o arquivo .pfx (OpenSSL Mac Verify Error).");
+    }
+  };
+
+  // --- SIMULAÇÃO DO BACKEND ---
   const searchInvoices = async (companyId: string) => {
     setIsLoading(true);
     clearLogs(); // Limpa logs anteriores para nova execução
@@ -214,6 +230,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       removeCompany, 
       markAsDownloaded, 
       searchInvoices, 
+      verifyCertificate,
       clearLogs,
       isLoading
     }}>
