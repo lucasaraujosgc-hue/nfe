@@ -13,9 +13,8 @@ RUN npm install
 # Copiar o restante dos arquivos do projeto
 COPY . .
 
-# Expor a porta padrão do Vite
-EXPOSE 5173
+# Expor a porta 80 (Padrão web)
+EXPOSE 80
 
-# Comando para iniciar a aplicação em modo de desenvolvimento
-# --host permite acesso externo ao container
-CMD ["npm", "run", "dev", "--", "--host"]
+# Comando para iniciar a aplicação
+CMD ["npm", "run", "dev"]
