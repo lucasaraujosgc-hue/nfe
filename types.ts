@@ -19,9 +19,12 @@ export interface Invoice {
   emitenteName: string;
   emitenteCNPJ: string;
   emissionDate: string; // ISO String
+  authorizationDate?: string; // ISO String
   amount: number;
   status: 'authorized' | 'canceled' | 'denied';
   downloaded: boolean;
+  uf?: string; // UF do Emitente
+  operationType?: string; // 'Entrada' | 'Saida'
 }
 
 export type InvoiceFilter = {

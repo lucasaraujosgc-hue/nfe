@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useRef, useEffect } from 'react';
-import { Download, RefreshCw, FileCheck, Search, Filter, Copy, Check, Terminal, XCircle, AlertTriangle, Info, ChevronDown, ChevronUp } from 'lucide-react';
+import { Download, RefreshCw, FileCheck, Search, Filter, Copy, Check, Terminal, ChevronDown, ChevronUp } from 'lucide-react';
 import { useAppContext } from '../context/AppContext';
 import { formatCurrency, formatDate, formatAccessKey } from '../utils';
 
@@ -81,6 +81,13 @@ export const InvoiceList: React.FC = () => {
     setTimeout(() => setCopiedKey(null), 2000);
   };
 
+  // Helper to format Date Time as dd/MM/yyyy HH:mm:ss
+  const formatDateTime = (isoString: string | undefined) => {
+    if (!isoString) return '-';
+    const date = new Date(isoString);
+    return date.toLocaleString('pt-BR');
+  };
+
   return (
     <div className="space-y-6 pb-20">
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
@@ -154,7 +161,7 @@ export const InvoiceList: React.FC = () => {
         </form>
       </div>
 
-      {/* Terminal de Logs (Visualização do Backend) */}
+      {/* Terminal de Logs */}
       <div className={`fixed bottom-0 left-64 right-0 bg-[#1e1e1e] text-gray-300 shadow-2xl transition-all duration-300 z-30 border-t border-gray-700 ${showTerminal ? 'h-64' : 'h-10'}`}>
          <div 
             className="flex items-center justify-between px-4 py-2 bg-[#2d2d2d] cursor-pointer hover:bg-[#3d3d3d] transition-colors"
@@ -201,7 +208,7 @@ export const InvoiceList: React.FC = () => {
       {/* Action Bar */}
       <div className="flex justify-between items-center bg-gray-50 p-4 rounded-lg border border-gray-200">
         <div className="text-sm text-gray-600">
-          <span className="font-semibold text-gray-900">{filteredInvoices.length}</span> notas encontradas
+          <span className="font-semibold text-gray-900">{filteredInvoices.length}</span> documentos listados
         </div>
         <button
           onClick={handleDownload}
@@ -220,10 +227,10 @@ export const InvoiceList: React.FC = () => {
       {/* Data Table */}
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden mb-8">
         <div className="overflow-x-auto">
-          <table className="w-full text-sm text-left">
-            <thead className="bg-gray-50 text-gray-600 font-medium border-b border-gray-200">
+          <table className="w-full text-xs text-left whitespace-nowrap">
+            <thead className="bg-gray-100 text-gray-700 font-bold border-b border-gray-200">
               <tr>
-                <th className="px-6 py-4 w-4">
+                <th className="px-4 py-3 w-4">
                   <input
                     type="checkbox"
                     className="rounded border-gray-300 text-blue-600 focus:ring-blue-500 w-4 h-4 cursor-pointer"
@@ -231,26 +238,30 @@ export const InvoiceList: React.FC = () => {
                     onChange={toggleSelectAll}
                   />
                 </th>
-                <th className="px-6 py-4">Status</th>
-                <th className="px-6 py-4">Emissão</th>
-                <th className="px-6 py-4">Emitente</th>
-                <th className="px-6 py-4 text-right">Valor (R$)</th>
-                <th className="px-6 py-4">Nº Nota / Série</th>
-                <th className="px-6 py-4">Chave de Acesso</th>
-                <th className="px-6 py-4 text-center">Ações</th>
+                <th className="px-4 py-3">Número NF-e</th>
+                <th className="px-4 py-3">CNPJ Emitente</th>
+                <th className="px-4 py-3">Razão Social Emitente</th>
+                <th className="px-4 py-3">Data de Emissão</th>
+                <th className="px-4 py-3">Data de Autorização</th>
+                <th className="px-4 py-3 text-right">Valor (R$)</th>
+                <th className="px-4 py-3">Chave de Acesso</th>
+                <th className="px-4 py-3">UF</th>
+                <th className="px-4 py-3">Situação</th>
+                <th className="px-4 py-3">Tipo</th>
+                <th className="px-4 py-3 text-center">Ações</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
               {filteredInvoices.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="px-6 py-12 text-center text-gray-400">
+                  <td colSpan={12} className="px-6 py-12 text-center text-gray-400">
                     Nenhuma nota fiscal encontrada para os filtros selecionados.
                   </td>
                 </tr>
               ) : (
                 filteredInvoices.map((inv) => (
                   <tr key={inv.id} className={`hover:bg-blue-50/50 transition-colors ${selectedInvoices.has(inv.id) ? 'bg-blue-50' : ''}`}>
-                    <td className="px-6 py-4">
+                    <td className="px-4 py-3">
                       <input
                         type="checkbox"
                         className="rounded border-gray-300 text-blue-600 focus:ring-blue-500 w-4 h-4 cursor-pointer"
@@ -258,56 +269,51 @@ export const InvoiceList: React.FC = () => {
                         onChange={() => toggleInvoice(inv.id)}
                       />
                     </td>
-                    <td className="px-6 py-4">
-                      <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
-                        inv.status === 'authorized' ? 'bg-green-100 text-green-800' : 
-                        inv.status === 'canceled' ? 'bg-red-100 text-red-800' : 'bg-gray-100 text-gray-800'
-                      }`}>
-                        {inv.status === 'authorized' ? 'Autorizada' : 'Cancelada'}
-                      </span>
+                    <td className="px-4 py-3 font-medium text-gray-900">{inv.numero}</td>
+                    <td className="px-4 py-3 text-gray-600">{inv.emitenteCNPJ}</td>
+                    <td className="px-4 py-3 text-gray-800 truncate max-w-[200px]" title={inv.emitenteName}>
+                      {inv.emitenteName}
                     </td>
-                    <td className="px-6 py-4 text-gray-600">
-                      {formatDate(inv.emissionDate)}
-                    </td>
-                    <td className="px-6 py-4">
-                      <div className="font-medium text-gray-900">{inv.emitenteName}</div>
-                      <div className="text-xs text-gray-500">{inv.emitenteCNPJ}</div>
-                    </td>
-                    <td className="px-6 py-4 text-right font-mono font-medium text-gray-700">
+                    <td className="px-4 py-3 text-gray-600">{formatDateTime(inv.emissionDate)}</td>
+                    <td className="px-4 py-3 text-gray-600">{formatDateTime(inv.authorizationDate)}</td>
+                    <td className="px-4 py-3 text-right font-medium text-gray-700">
                       {formatCurrency(inv.amount)}
                     </td>
-                    <td className="px-6 py-4 text-gray-600">
-                      {inv.numero} <span className="text-gray-400">/</span> {inv.serie}
-                    </td>
-                    <td className="px-6 py-4">
+                    <td className="px-4 py-3">
                       <div 
-                        className={`font-mono text-xs p-1.5 rounded w-max cursor-pointer transition-all flex items-center gap-2 group ${
+                        className={`font-mono text-[10px] p-1 rounded w-max cursor-pointer transition-all flex items-center gap-1 group ${
                           copiedKey === inv.accessKey 
                             ? 'bg-green-100 text-green-700 border border-green-200' 
                             : 'bg-gray-100 text-gray-500 hover:bg-blue-100 hover:text-blue-700'
                         }`}
                         onClick={() => copyToClipboard(inv.accessKey)}
-                        title="Clique para copiar a chave"
+                        title={inv.accessKey}
                       >
-                         <span>{formatAccessKey(inv.accessKey).substring(0, 25)}...</span>
+                         <span>{inv.accessKey.substring(0, 25)}...</span>
                          {copiedKey === inv.accessKey ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3 opacity-0 group-hover:opacity-100 transition-opacity" />}
                       </div>
-                      {copiedKey === inv.accessKey && (
-                        <span className="text-[10px] text-green-600 absolute ml-1">Copiado!</span>
-                      )}
                     </td>
-                    <td className="px-6 py-4 text-center">
+                    <td className="px-4 py-3 text-center">{inv.uf || 'BA'}</td>
+                    <td className="px-4 py-3">
+                       <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${
+                        inv.status === 'authorized' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
+                       }`}>
+                         {inv.status === 'authorized' ? 'Autorizada' : 'Cancelada'}
+                       </span>
+                    </td>
+                    <td className="px-4 py-3 text-gray-600">{inv.operationType || 'Saida'}</td>
+                    <td className="px-4 py-3 text-center">
                       <button 
                         onClick={() => {
                           setSelectedInvoices(new Set([inv.id]));
                           handleDownload();
                         }}
-                        className={`p-2 rounded-full transition-colors ${
+                        className={`p-1.5 rounded-full transition-colors ${
                           inv.downloaded ? 'text-green-600 hover:bg-green-100' : 'text-gray-400 hover:text-blue-600 hover:bg-blue-100'
                         }`}
                         title={inv.downloaded ? "Baixado" : "Baixar XML"}
                       >
-                        {inv.downloaded ? <FileCheck className="w-5 h-5" /> : <Download className="w-5 h-5" />}
+                        {inv.downloaded ? <FileCheck className="w-4 h-4" /> : <Download className="w-4 h-4" />}
                       </button>
                     </td>
                   </tr>
@@ -318,7 +324,7 @@ export const InvoiceList: React.FC = () => {
         </div>
         <div className="px-6 py-4 border-t border-gray-200 bg-gray-50 text-xs text-gray-500 flex justify-between">
             <span>Última sincronização: {new Date().toLocaleTimeString()}</span>
-            <span>Ambiente Nacional - NT 2014.002</span>
+            <span>Ambiente Nacional - SEFAZ</span>
         </div>
       </div>
     </div>
