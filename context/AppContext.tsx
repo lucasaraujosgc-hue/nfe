@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, ReactNode, useEffect } from 'react';
 import { Company, Invoice, SystemLog } from '../types';
-import { buildDistDFeInt } from '../utils/nfeXmlBuilders';
+import { buildDistDFeInt, buildConsChNFe } from '../utils/nfeXmlBuilders';
 
 interface AppContextType {
   companies: Company[];
@@ -11,10 +11,11 @@ interface AppContextType {
   removeCompany: (id: string) => void;
   markAsDownloaded: (ids: string[]) => void;
   searchInvoices: (companyId: string) => Promise<void>;
+  fetchFullXml: (companyId: string, accessKey: string) => Promise<void>; // Nova função
   verifyCertificate: (file: File | null, password: string) => Promise<void>;
   clearLogs: () => void;
   isLoading: boolean;
-  isError: boolean; // Novo estado para indicar erro de conexão
+  isError: boolean;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
@@ -30,7 +31,6 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   // 1. Carregar dados do banco de dados local
   useEffect(() => {
-    // Adiciona um pequeno delay para garantir que o backend subiu
     const timeout = setTimeout(() => {
         fetch('/api/db')
           .then(res => {
@@ -40,40 +40,27 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           .then(data => {
             if (data.companies) setCompanies(data.companies);
             if (data.invoices) setInvoices(data.invoices);
-            setIsDataLoaded(true); // Só marca como carregado se DE FATO carregou
+            setIsDataLoaded(true); 
             setIsError(false);
-            console.log('Dados carregados com sucesso de /app/data/db.json');
+            console.log('Dados carregados com sucesso.');
           })
           .catch(err => {
-            console.error("ERRO CRÍTICO: Não foi possível carregar o banco de dados.", err);
-            // IMPORTANTE: Não marcamos isDataLoaded=true aqui. 
-            // Isso impede que o useEffect de salvamento (abaixo) sobrescreva o banco com arrays vazios.
+            console.error("ERRO CRÍTICO DB:", err);
             setIsError(true); 
           });
     }, 1000);
-
     return () => clearTimeout(timeout);
   }, []);
 
-  // 2. Salvar dados no servidor sempre que houver mudança
+  // 2. Salvar dados no servidor
   useEffect(() => {
-    // BLOQUEIO DE SEGURANÇA: Se os dados não foram carregados corretamente, NUNCA salve.
     if (!isDataLoaded || isError) return;
-
-    const dbData = {
-      companies,
-      invoices,
-      lastUpdated: new Date().toISOString()
-    };
-
-    console.log("Persistindo dados em /app/data/db.json...");
-
+    const dbData = { companies, invoices, lastUpdated: new Date().toISOString() };
     fetch('/api/db', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(dbData)
-    }).catch(err => console.error("Erro ao salvar dados no disco:", err));
-
+    }).catch(err => console.error("Erro ao salvar dados:", err));
   }, [companies, invoices, isDataLoaded, isError]);
 
   const addLog = (message: string, type: 'info' | 'success' | 'warning' | 'error' = 'info', details?: string) => {
@@ -90,194 +77,140 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   const addCompany = (company: Company) => {
     setCompanies(prev => [...prev, { ...company, lastNSU: '0' }]);
-    addLog(`Empresa ${company.apelido} cadastrada com sucesso.`, 'success');
+    addLog(`Empresa ${company.apelido} cadastrada.`, 'success');
   };
 
   const updateCompany = (updatedCompany: Company) => {
     setCompanies(prev => prev.map(c => c.id === updatedCompany.id ? updatedCompany : c));
-    addLog(`Dados da empresa ${updatedCompany.apelido} atualizados.`, 'info');
+    addLog(`Empresa ${updatedCompany.apelido} atualizada.`, 'info');
   };
 
   const removeCompany = (id: string) => {
-    const comp = companies.find(c => c.id === id);
     setCompanies(prev => prev.filter(c => c.id !== id));
     setInvoices(prev => prev.filter(inv => inv.companyId !== id));
-    addLog(`Empresa ${comp?.apelido || id} removida.`, 'warning');
+    addLog(`Empresa removida.`, 'warning');
   };
 
   const markAsDownloaded = (ids: string[]) => {
     setInvoices(prev => prev.map(inv => 
       ids.includes(inv.id) ? { ...inv, downloaded: true } : inv
     ));
-    addLog(`${ids.length} notas marcadas como baixadas (Salvo localmente).`, 'success');
+    addLog(`${ids.length} notas marcadas como baixadas.`, 'success');
   };
 
   const verifyCertificate = async (file: File | null, password: string): Promise<void> => {
-    // 1. Upload do Arquivo para o Backend
     if (file) {
         const formData = new FormData();
         formData.append('file', file);
-        
         try {
-            console.log("Enviando certificado para o backend...");
-            const res = await fetch('/api/upload-cert', {
-                method: 'POST',
-                body: formData
-            });
-
-            if (!res.ok) {
-                let errorDetails = res.statusText;
-                try {
-                    // Tenta ler como JSON (ProblemDetails do .NET)
-                    const jsonError = await res.json();
-                    if (jsonError.detail) errorDetails = jsonError.detail;
-                    else if (jsonError.title) errorDetails = jsonError.title;
-                    else if (jsonError.message) errorDetails = jsonError.message;
-                } catch (e) {
-                    // Fallback para texto plano se não for JSON
-                    try { errorDetails = await res.text(); } catch {}
-                }
-                
-                // Limpeza de string caso venha com aspas extras
-                if (typeof errorDetails === 'string') {
-                    errorDetails = errorDetails.replace(/^"|"$/g, '');
-                }
-                
-                throw new Error(`Servidor: ${errorDetails} (Cod: ${res.status})`);
-            }
-            console.log("Upload concluído.");
+            const res = await fetch('/api/upload-cert', { method: 'POST', body: formData });
+            if (!res.ok) throw new Error("Falha no upload");
         } catch (e: any) {
-            console.error(e);
-            throw new Error(`Falha no upload do certificado: ${e.message}`);
+            throw new Error(`Upload falhou: ${e.message}`);
         }
     }
-    
-    // 2. Validação simples de input
-    if (!password) {
-        throw new Error("Senha é obrigatória.");
-    }
+    if (!password) throw new Error("Senha é obrigatória.");
   };
 
-  // --- MODO PRODUÇÃO ---
+  // --- BUSCAR XML COMPLETO POR CHAVE ---
+  const fetchFullXml = async (companyId: string, accessKey: string) => {
+      setIsLoading(true);
+      const company = companies.find(c => c.id === companyId);
+      if (!company) { setIsLoading(false); return; }
+
+      try {
+          addLog(`Tentando baixar XML Completo para a nota...`, 'info', accessKey);
+          const xmlPayload = buildConsChNFe(company.cnpj, accessKey);
+
+          const response = await fetch('/api/sefaz/fetch-xml', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'X-Company-ID': companyId },
+              body: JSON.stringify({ xml: xmlPayload, password: company.certificatePassword })
+          });
+
+          if (!response.ok) throw new Error("Erro na comunicação com Backend");
+          const data = await response.json();
+
+          if (data.invoices && data.invoices.length > 0) {
+              const fullInvoice = data.invoices[0];
+              // Atualiza a nota existente com os novos dados completos
+              setInvoices(prev => prev.map(inv => {
+                  if (inv.accessKey === accessKey) {
+                      return { ...inv, ...fullInvoice, id: inv.id }; // Mantém o ID interno original
+                  }
+                  return inv;
+              }));
+              addLog(`Sucesso! XML Completo obtido.`, 'success');
+          } else {
+              addLog(`SEFAZ não retornou o XML completo. Motivo: ${data.xMotivo}`, 'warning');
+              // Geralmente precisa manifestar antes, mas o app ainda não faz isso.
+              if (data.xMotivo.includes("Ciencia") || data.xMotivo.includes("Manifestacao")) {
+                  addLog("Dica: É necessário realizar a Manifestação (Ciência) antes de baixar o XML completo.", 'info');
+              }
+          }
+
+      } catch (err: any) {
+          addLog(`Erro ao buscar XML: ${err.message}`, 'error');
+      } finally {
+          setIsLoading(false);
+      }
+  };
+
   const searchInvoices = async (companyId: string) => {
     setIsLoading(true);
     clearLogs();
     
     const company = companies.find(c => c.id === companyId);
-    if (!company) {
-      addLog("Erro interno: Empresa não encontrada no contexto.", "error");
-      setIsLoading(false);
-      return;
-    }
+    if (!company) { setIsLoading(false); return; }
 
     try {
-      addLog(`Iniciando conexão segura com Ambiente Nacional (SEFAZ) para: ${company.razaoSocial}`, 'info');
-      addLog(`Utilizando certificado digital ID: ${company.certificateName}`, 'info');
+      addLog(`Sincronizando com SEFAZ (NSU: ${company.lastNSU})...`, 'info');
       
-      // 1. Gerar o Payload XML
       const xmlPayload = buildDistDFeInt(company.cnpj, company.lastNSU);
-      addLog(`Gerando XML distDFeInt (NSU: ${company.lastNSU})...`, 'info');
       
-      // 2. Tentar conexão real com Backend (Proxy SEFAZ)
-      addLog("Enviando requisição SOAP via Backend C#...", 'warning');
-      
-      let response;
-      try {
-          response = await fetch('/api/sefaz/dist-dfe', {
-              method: 'POST',
-              headers: {
-                  'Content-Type': 'application/json',
-                  'X-Company-ID': companyId
-              },
-              body: JSON.stringify({
-                  xml: xmlPayload,
-                  password: company.certificatePassword // Enviando senha para decifrar PFX no backend
-              })
-          });
-      } catch (netErr) {
-          throw new Error("Não foi possível conectar ao servidor Backend na porta 5000. Verifique se ele está rodando.");
-      }
+      const response = await fetch('/api/sefaz/dist-dfe', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Company-ID': companyId },
+          body: JSON.stringify({ xml: xmlPayload, password: company.certificatePassword })
+      });
 
-      if (!response.ok) {
-          let errorMsg = response.statusText;
-          try {
-             // Tenta extrair a mensagem detalhada (JSON Problem Details ou texto)
-             const textBody = await response.text();
-             try {
-                const jsonBody = JSON.parse(textBody);
-                // Se for ProblemDetails do ASP.NET
-                if (jsonBody.detail) errorMsg = jsonBody.detail;
-                else if (jsonBody.title) errorMsg = jsonBody.title;
-                else errorMsg = textBody;
-             } catch {
-                if (textBody) errorMsg = textBody.replace(/^"|"$/g, '');
-             }
-          } catch (e) { /* ignore parse error */ }
-
-          if (response.status === 404) {
-              throw new Error("Rota do Backend não encontrada (404).");
-          }
-          
-          throw new Error(`Erro Servidor (${response.status}): ${errorMsg}`);
-      }
-
+      if (!response.ok) throw new Error("Erro Servidor");
       const data = await response.json();
       
-      // Processar resposta real (Lógica de Produção)
       if (data.invoices && data.invoices.length > 0) {
            const newInvoices: Invoice[] = data.invoices;
-           
-           // Atualizar estado
            setInvoices(prev => {
               const existingIds = new Set(prev.map(i => i.accessKey));
               const uniqueNew = newInvoices.filter(i => !existingIds.has(i.accessKey));
               return [...uniqueNew, ...prev];
             });
-            
-            // Atualizar NSU
-            if (data.maxNSU) {
-                updateCompany({ ...company, lastNSU: data.maxNSU });
-                addLog(`Cursor de NSU atualizado para: ${data.maxNSU}`, 'info');
-            }
-            
-            addLog(`Sucesso: ${newInvoices.length} documentos retornados da SEFAZ.`, 'success');
+            if (data.maxNSU) updateCompany({ ...company, lastNSU: data.maxNSU });
+            addLog(`Sucesso: ${newInvoices.length} notas novas.`, 'success');
       } else {
-          // Se houve erro na SEFAZ (cStat != 138 e != 137)
           if (data.cStat !== '138' && data.cStat !== '137') {
-              addLog(`SEFAZ retornou: ${data.cStat} - ${data.xMotivo}`, 'warning');
+              addLog(`SEFAZ: ${data.cStat} - ${data.xMotivo}`, 'warning');
           } else {
-              addLog("Requisição completada. Nenhum documento novo encontrado.", 'success');
-              // Atualiza NSU mesmo se vazio, para não consultar o mesmo intervalo
+              addLog("Nenhuma nota nova encontrada.", 'success');
               if (data.maxNSU && data.maxNSU !== company.lastNSU) {
                   updateCompany({ ...company, lastNSU: data.maxNSU });
-                  addLog(`Cursor avançado para NSU: ${data.maxNSU}`, 'info');
               }
           }
       }
 
     } catch (err: any) {
       addLog(`FALHA: ${err.message}`, 'error');
-      console.error(err);
     } finally {
       setIsLoading(false);
-      addLog("Processo finalizado.", 'info');
     }
   };
 
   return (
     <AppContext.Provider value={{ 
-      companies, 
-      invoices, 
-      logs,
-      addCompany, 
-      updateCompany, 
-      removeCompany, 
-      markAsDownloaded, 
-      searchInvoices, 
-      verifyCertificate,
-      clearLogs,
-      isLoading,
-      isError
+      companies, invoices, logs,
+      addCompany, updateCompany, removeCompany, 
+      markAsDownloaded, searchInvoices, fetchFullXml,
+      verifyCertificate, clearLogs,
+      isLoading, isError
     }}>
       {children}
     </AppContext.Provider>
