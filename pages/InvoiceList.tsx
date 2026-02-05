@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useRef, useEffect } from 'react';
-import { Download, RefreshCw, FileCheck, Search, Filter, Copy, Check, Terminal, ChevronDown, ChevronUp, CloudDownload, ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react';
+import { Download, RefreshCw, FileCheck, Search, Filter, Copy, Check, Terminal, ChevronDown, ChevronUp, DownloadCloud, ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react';
 import { useAppContext } from '../context/AppContext';
 import { formatCurrency, formatDate, formatAccessKey } from '../utils';
 // @ts-ignore
@@ -352,7 +352,7 @@ export const InvoiceList: React.FC = () => {
                             title="Tentar baixar XML Completo na Sefaz"
                             disabled={isLoading}
                           >
-                             <CloudDownload className="w-4 h-4" />
+                             <DownloadCloud className="w-4 h-4" />
                           </button>
                       )}
 
