@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useRef, useEffect } from 'react';
-import { Download, RefreshCw, FileCheck, Search, Filter, Copy, Check, Terminal, ChevronDown, ChevronUp, DownloadCloud, ArrowUpDown, ArrowUp, ArrowDown, FileText } from 'lucide-react';
+import { Download, RefreshCw, FileCheck, Search, Filter, Copy, Check, Terminal, ChevronDown, ChevronUp, DownloadCloud, ArrowUpDown, ArrowUp, ArrowDown, FileText, AlertTriangle } from 'lucide-react';
 import { useAppContext } from '../context/AppContext';
 import { formatCurrency, formatDate, formatAccessKey } from '../utils';
 // @ts-ignore
@@ -9,7 +9,7 @@ import { saveAs } from 'file-saver';
 import { Invoice } from '../types';
 
 export const InvoiceList: React.FC = () => {
-  const { companies, invoices, isLoading, searchInvoices, fetchFullXml, markAsDownloaded, logs } = useAppContext();
+  const { companies, invoices, isLoading, searchInvoices, fetchFullXml, manifestInvoice, markAsDownloaded, logs } = useAppContext();
   
   const [selectedCompany, setSelectedCompany] = useState<string>(companies[0]?.id || '');
   
@@ -107,12 +107,6 @@ export const InvoiceList: React.FC = () => {
     searchInvoices(selectedCompany);
   };
 
-  const handleFetchFullXml = async (e: React.MouseEvent, inv: Invoice) => {
-      e.stopPropagation();
-      setShowTerminal(true);
-      await fetchFullXml(inv.companyId, inv.accessKey);
-  };
-
   const toggleSelectAll = () => {
     if (selectedInvoices.size === processedInvoices.length) {
       setSelectedInvoices(new Set());
@@ -131,40 +125,54 @@ export const InvoiceList: React.FC = () => {
     setSelectedInvoices(newSelected);
   };
 
-  // Function to download ONLY summaries from the current list
-  const handleDownloadAllSummaries = async () => {
-    const summaryInvoices = processedInvoices.filter(inv => inv.originalXml?.includes('resNFe'));
-    
-    if (summaryInvoices.length === 0) {
-        alert("Não há notas de resumo na lista atual para baixar.");
-        return;
-    }
+  // --- NOVA LÓGICA DE DOWNLOAD FORÇADO ---
+  const handleForceFullDownload = async (targetInvoices: Invoice[]) => {
+      setShowTerminal(true);
+      setIsProcessing(true);
 
-    setIsProcessing(true);
-    try {
-        const zip = new JSZip();
-        const folder = zip.folder("resumos_notas");
-        
-        summaryInvoices.forEach(inv => {
-            const xmlContent = inv.originalXml || "";
-            // Ensure we are saving as resumo
-            if (xmlContent.includes('resNFe')) {
-                folder.file(`${inv.accessKey}-resumo.xml`, xmlContent);
-            }
-        });
+      for (const inv of targetInvoices) {
+          // 1. Tentar baixar
+          const success = await fetchFullXml(inv.companyId, inv.accessKey);
+          
+          if (!success) {
+              // 2. Se falhar, perguntar se quer manifestar
+              const confirmManifest = window.confirm(
+                  `O XML completo da nota ${inv.numero || 'S/N'} (Final da chave: ...${inv.accessKey.slice(-4)}) não foi encontrado.\n\n` +
+                  `Deseja realizar a "Ciência da Operação" agora para tentar liberar o download?`
+              );
 
-        const content = await zip.generateAsync({ type: "blob" });
-        saveAs(content, `Lote_Resumos_${new Date().toISOString().slice(0,10)}.zip`);
-        
-        // We don't necessarily mark as downloaded since they are just summaries, 
-        // but if you want to mark them, uncomment below:
-        // markAsDownloaded(summaryInvoices.map(i => i.id));
-        
-    } catch (error) {
-        console.error("Erro ao baixar resumos:", error);
-    } finally {
-        setIsProcessing(false);
-    }
+              if (confirmManifest) {
+                  const manifestSuccess = await manifestInvoice(inv.companyId, inv.accessKey);
+                  if (manifestSuccess) {
+                      // 3. Aguardar 1 segundo para processamento da SEFAZ
+                      await new Promise(r => setTimeout(r, 1500));
+                      // 4. Tentar baixar novamente
+                      await fetchFullXml(inv.companyId, inv.accessKey);
+                  }
+              }
+          }
+      }
+      setIsProcessing(false);
+  };
+
+  const handleBatchForceDownload = async () => {
+      // Prioriza a seleção, senão pega todos os resumos visíveis
+      let targets: Invoice[] = [];
+      
+      if (selectedInvoices.size > 0) {
+          targets = invoices.filter(inv => selectedInvoices.has(inv.id) && inv.originalXml?.includes('resNFe'));
+      } else {
+          targets = processedInvoices.filter(inv => inv.originalXml?.includes('resNFe'));
+      }
+
+      if (targets.length === 0) {
+          alert("Nenhuma nota de 'Resumo' encontrada na seleção ou na lista atual.");
+          return;
+      }
+
+      if (window.confirm(`Você está prestes a tentar obter o XML COMPLETO de ${targets.length} notas.\n\nCaso a nota não esteja disponível, será solicitado confirmação para realizar a Manifestação (Ciência). Continuar?`)) {
+          await handleForceFullDownload(targets);
+      }
   };
 
   const handleDownload = async () => {
@@ -287,16 +295,16 @@ export const InvoiceList: React.FC = () => {
         </div>
 
         <div className="flex gap-2">
-            {/* BOTÃO NOVO: BAIXAR TODOS RESUMOS */}
+            {/* BOTÃO ALTERADO: BAIXAR COMPLETO FORÇADO */}
             {summaryCount > 0 && (
                 <button
-                    onClick={handleDownloadAllSummaries}
+                    onClick={handleBatchForceDownload}
                     disabled={isProcessing}
-                    className="flex items-center gap-2 px-4 py-2 rounded-lg font-medium text-yellow-700 bg-yellow-100 hover:bg-yellow-200 transition-all border border-yellow-200"
-                    title="Baixar ZIP contendo apenas os XMLs de Resumo listados abaixo"
+                    className="flex items-center gap-2 px-4 py-2 rounded-lg font-medium text-blue-700 bg-blue-100 hover:bg-blue-200 transition-all border border-blue-200 shadow-sm"
+                    title="Tentar baixar XML Completo para todas os Resumos. Se necessário, perguntará para Manifestar."
                 >
-                     {isProcessing ? <RefreshCw className="w-4 h-4 animate-spin" /> : <FileText className="w-4 h-4" />}
-                     <span>Baixar Resumos ({summaryCount})</span>
+                     {isProcessing ? <RefreshCw className="w-4 h-4 animate-spin" /> : <DownloadCloud className="w-4 h-4" />}
+                     <span>Obter XMLs Completos ({summaryCount})</span>
                 </button>
             )}
 
@@ -310,7 +318,7 @@ export const InvoiceList: React.FC = () => {
             }`}
             >
             {isProcessing ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
-            {isProcessing ? 'Gerando...' : selectedInvoices.size > 1 ? `Baixar Selecionados (${selectedInvoices.size})` : 'Baixar XML'}
+            {isProcessing ? 'Gerando...' : selectedInvoices.size > 1 ? `Salvar Selecionados (${selectedInvoices.size})` : 'Salvar XML'}
             </button>
         </div>
       </div>
@@ -404,9 +412,12 @@ export const InvoiceList: React.FC = () => {
                       {/* Botão Baixar XML Completo (Só se for resumo) */}
                       {inv.originalXml?.includes('resNFe') && (
                           <button
-                            onClick={(e) => handleFetchFullXml(e, inv)}
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                handleForceFullDownload([inv]);
+                            }}
                             className="p-1.5 rounded-full text-blue-600 hover:bg-blue-100 transition-colors"
-                            title="Tentar baixar XML Completo na Sefaz"
+                            title="Tentar baixar XML Completo (Manifestando se necessário)"
                             disabled={isLoading}
                           >
                              <DownloadCloud className="w-4 h-4" />

@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, ReactNode, useEffect } from 'react';
 import { Company, Invoice, SystemLog } from '../types';
-import { buildDistDFeInt, buildConsChNFe } from '../utils/nfeXmlBuilders';
+import { buildDistDFeInt, buildConsChNFe, buildManifestacaoXml } from '../utils/nfeXmlBuilders';
 
 interface AppContextType {
   companies: Company[];
@@ -11,7 +11,8 @@ interface AppContextType {
   removeCompany: (id: string) => void;
   markAsDownloaded: (ids: string[]) => void;
   searchInvoices: (companyId: string) => Promise<void>;
-  fetchFullXml: (companyId: string, accessKey: string) => Promise<void>; // Nova função
+  fetchFullXml: (companyId: string, accessKey: string) => Promise<boolean>; // Changed return to boolean
+  manifestInvoice: (companyId: string, accessKey: string) => Promise<boolean>; // Nova função
   verifyCertificate: (file: File | null, password: string) => Promise<void>;
   clearLogs: () => void;
   isLoading: boolean;
@@ -112,11 +113,46 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     if (!password) throw new Error("Senha é obrigatória.");
   };
 
-  // --- BUSCAR XML COMPLETO POR CHAVE ---
-  const fetchFullXml = async (companyId: string, accessKey: string) => {
+  // --- MANIFESTAR (CIÊNCIA DA OPERAÇÃO) ---
+  const manifestInvoice = async (companyId: string, accessKey: string): Promise<boolean> => {
       setIsLoading(true);
       const company = companies.find(c => c.id === companyId);
-      if (!company) { setIsLoading(false); return; }
+      if (!company) { setIsLoading(false); return false; }
+      
+      try {
+          addLog(`Iniciando Manifestação (Ciência da Operação)...`, 'info', accessKey);
+          const xmlPayload = buildManifestacaoXml(company.cnpj, accessKey);
+
+          const response = await fetch('/api/sefaz/manifest', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'X-Company-ID': companyId },
+              body: JSON.stringify({ xml: xmlPayload, password: company.certificatePassword })
+          });
+
+          if (!response.ok) throw new Error("Erro comunicação SEFAZ (Recepção Evento)");
+          const data = await response.json();
+          
+          if (data.cStat === '135' || data.cStat === '136' || data.cStat === '573') {
+              // 135: Evento vinculado, 136: Evento registrado, 573: Duplicidade (já feito)
+              addLog(`Manifestação realizada com sucesso! (Cód: ${data.cStat})`, 'success', data.xMotivo);
+              return true;
+          } else {
+              addLog(`Falha na manifestação: ${data.xMotivo}`, 'error', `cStat: ${data.cStat}`);
+              return false;
+          }
+      } catch (err: any) {
+          addLog(`Erro ao manifestar: ${err.message}`, 'error');
+          return false;
+      } finally {
+          setIsLoading(false);
+      }
+  };
+
+  // --- BUSCAR XML COMPLETO POR CHAVE ---
+  const fetchFullXml = async (companyId: string, accessKey: string): Promise<boolean> => {
+      setIsLoading(true);
+      const company = companies.find(c => c.id === companyId);
+      if (!company) { setIsLoading(false); return false; }
 
       try {
           addLog(`Tentando baixar XML Completo para a nota...`, 'info', accessKey);
@@ -147,19 +183,20 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
               if (isFullXml) {
                   addLog(`Sucesso! XML Completo (procNFe) obtido e atualizado.`, 'success');
+                  return true;
               } else {
-                  addLog(`Atenção: A SEFAZ retornou apenas o Resumo novamente.`, 'warning', 'Provavelmente é necessário realizar a Manifestação do Destinatário (Ciência da Operação) antes que o XML completo esteja disponível.');
+                  addLog(`Aviso: A SEFAZ retornou apenas o Resumo.`, 'warning');
+                  return false;
               }
 
           } else {
               addLog(`SEFAZ não retornou o XML. Motivo: ${data.xMotivo}`, 'warning');
-              if (data.xMotivo.includes("Ciencia") || data.xMotivo.includes("Manifestacao")) {
-                  addLog("Dica: É necessário realizar a Manifestação (Ciência) antes de baixar o XML completo.", 'info');
-              }
+              return false;
           }
 
       } catch (err: any) {
           addLog(`Erro ao buscar XML: ${err.message}`, 'error');
+          return false;
       } finally {
           setIsLoading(false);
       }
@@ -217,7 +254,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     <AppContext.Provider value={{ 
       companies, invoices, logs,
       addCompany, updateCompany, removeCompany, 
-      markAsDownloaded, searchInvoices, fetchFullXml,
+      markAsDownloaded, searchInvoices, fetchFullXml, manifestInvoice,
       verifyCertificate, clearLogs,
       isLoading, isError
     }}>

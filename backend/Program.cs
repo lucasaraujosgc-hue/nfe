@@ -1,7 +1,9 @@
 using System.IO.Compression;
 using System.Net.Security;
 using System.Security.Cryptography.X509Certificates;
+using System.Security.Cryptography.Xml;
 using System.Text;
+using System.Xml;
 using System.Xml.Linq;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
@@ -51,7 +53,6 @@ else
     Console.WriteLine($"[INFO] Modo Local. Salvando dados em: {BaseDataPath}");
 }
 
-// Inicialização segura de diretórios
 try {
     if (!Directory.Exists(BaseDataPath)) Directory.CreateDirectory(BaseDataPath);
     if (!Directory.Exists(BaseCertPath)) Directory.CreateDirectory(BaseCertPath);
@@ -59,8 +60,51 @@ try {
     Console.WriteLine($"[AVISO] Falha ao criar diretórios: {ex.Message}");
 }
 
+// --- HELPER: ASSINATURA DIGITAL (XML SIGNATURE) ---
+string SignXml(string xmlString, X509Certificate2 cert, string docId)
+{
+    try 
+    {
+        var doc = new XmlDocument();
+        doc.PreserveWhitespace = true;
+        doc.LoadXml(xmlString);
+
+        var signedXml = new SignedXml(doc);
+        signedXml.SigningKey = cert.GetRSAPrivateKey();
+
+        // Referência ao ID do elemento a ser assinado (infEvento)
+        var reference = new Reference();
+        reference.Uri = "#" + docId;
+        
+        // Transformações exigidas pela SEFAZ
+        reference.AddTransform(new XmlDsigEnvelopedSignatureTransform());
+        reference.AddTransform(new XmlDsigC14NTransform());
+        
+        signedXml.AddReference(reference);
+
+        // KeyInfo
+        var keyInfo = new KeyInfo();
+        keyInfo.AddClause(new KeyInfoX509Data(cert));
+        signedXml.KeyInfo = keyInfo;
+
+        signedXml.ComputeSignature();
+
+        var xmlDigitalSignature = signedXml.GetXml();
+        
+        // Adiciona a assinatura dentro da tag <evento>, após <infEvento>
+        var eventoNode = doc.GetElementsByTagName("evento")[0];
+        eventoNode.AppendChild(doc.ImportNode(xmlDigitalSignature, true));
+
+        return doc.OuterXml;
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"[ERRO ASSINATURA] {ex.Message}");
+        throw;
+    }
+}
+
 // --- HELPER DE PARSE ---
-// Extrai a lógica de parsing para usar em ambos os endpoints
 List<object> ParseDocZips(IEnumerable<XElement> docZips, string companyId)
 {
     var processedInvoices = new List<object>();
@@ -91,7 +135,7 @@ List<object> ParseDocZips(IEnumerable<XElement> docZips, string companyId)
                     numero = "000",
                     serie = "0",
                     companyId = companyId,
-                    id = $"inv-{Guid.NewGuid()}", // ID temporário, frontend deve gerenciar duplicação
+                    id = $"inv-{Guid.NewGuid()}", 
                     downloaded = false,
                     originalXml = xmlContent
                 });
@@ -137,6 +181,25 @@ List<object> ParseDocZips(IEnumerable<XElement> docZips, string companyId)
     return processedInvoices;
 }
 
+// --- HELPER DE CERTIFICADO ---
+X509Certificate2? GetCertificate(string certName, string password)
+{
+    var certPath = Path.Combine(BaseCertPath, certName);
+    if (!File.Exists(certPath))
+    {
+        var altPath = Path.Combine(BaseCertPath, certName.Replace(" ", "_"));
+        if (File.Exists(altPath)) certPath = altPath;
+        else return null;
+    }
+
+    try {
+        return new X509Certificate2(certPath, password, X509KeyStorageFlags.EphemeralKeySet);
+    } catch {
+        // Fallback for Linux sometimes needing stricter flags
+        return new X509Certificate2(certPath, password, X509KeyStorageFlags.MachineKeySet | X509KeyStorageFlags.PersistKeySet | X509KeyStorageFlags.Exportable);
+    }
+}
+
 // --- ENDPOINTS ---
 
 app.MapPost("/api/upload-cert", async (HttpContext context) =>
@@ -144,33 +207,22 @@ app.MapPost("/api/upload-cert", async (HttpContext context) =>
     try 
     {
         Console.WriteLine("-> Recebendo upload de certificado...");
-        if (!context.Request.HasFormContentType)
-            return Results.BadRequest("Content-Type inválido.");
-
+        if (!context.Request.HasFormContentType) return Results.BadRequest("Content-Type inválido.");
         var form = await context.Request.ReadFormAsync();
         var file = form.Files["file"]; 
-
-        if (file == null || file.Length == 0)
-            return Results.BadRequest("Arquivo vazio.");
-
+        if (file == null || file.Length == 0) return Results.BadRequest("Arquivo vazio.");
         var fileName = Path.GetFileName(file.FileName);
         var safeFileName = fileName.Replace(" ", "_");
         var filePath = Path.Combine(BaseCertPath, safeFileName);
         
-        if (!Directory.Exists(BaseCertPath)) Directory.CreateDirectory(BaseCertPath);
-        if (File.Exists(filePath)) File.Delete(filePath);
-
         using (var stream = new FileStream(filePath, FileMode.Create))
         {
             await file.CopyToAsync(stream);
         }
-        
-        Console.WriteLine($"-> Certificado salvo: {safeFileName}");
-        return Results.Ok(new { message = "Upload realizado", filename = safeFileName, path = filePath });
+        return Results.Ok(new { message = "Upload realizado", filename = safeFileName });
     }
     catch (Exception ex)
     {
-        Console.WriteLine($"[ERRO UPLOAD] {ex.Message}");
         return Results.Problem($"Erro no servidor: {ex.Message}");
     }
 }).DisableAntiforgery();
@@ -189,21 +241,95 @@ app.MapPost("/api/db", async (HttpContext context) =>
     try {
         using var reader = new StreamReader(context.Request.Body);
         var body = await reader.ReadToEndAsync();
-        
-        if (!Directory.Exists(BaseDataPath)) Directory.CreateDirectory(BaseDataPath);
-        
         var parsed = JsonConvert.DeserializeObject(body);
         var indented = JsonConvert.SerializeObject(parsed, Formatting.Indented);
-
         await File.WriteAllTextAsync(dbPath, indented);
         return Results.Ok(new { success = true });
     } catch (Exception ex) {
-        Console.WriteLine($"[ERRO DB] {ex.Message}");
         return Results.Problem(ex.Message);
     }
 });
 
-// Função genérica para chamar o SEFAZ DistDFe
+// --- FUNÇÃO PARA MANIFESTAÇÃO (ENVIO DE EVENTO) ---
+app.MapPost("/api/sefaz/manifest", async (HttpContext context) => {
+    Console.WriteLine($"-> Manifestação do Destinatário");
+    try
+    {
+        var requestBody = await new StreamReader(context.Request.Body).ReadToEndAsync();
+        var json = JObject.Parse(requestBody);
+        
+        string xmlBody = json["xml"]?.ToString() ?? "";
+        string password = json["password"]?.ToString() ?? "";
+        string companyId = context.Request.Headers["X-Company-ID"].ToString();
+
+        // Extrair ID do evento para assinatura
+        var xDoc = XDocument.Parse(xmlBody);
+        var infEvento = xDoc.Descendants().FirstOrDefault(x => x.Name.LocalName == "infEvento");
+        string idEvento = infEvento?.Attribute("Id")?.Value ?? "";
+
+        if (string.IsNullOrEmpty(companyId) || string.IsNullOrEmpty(idEvento)) return Results.BadRequest("Dados inválidos (CompanyID ou ID do Evento)");
+
+        if (!File.Exists(dbPath)) return Results.NotFound("Banco de dados vazio");
+        var dbContent = await File.ReadAllTextAsync(dbPath);
+        var dbJson = JObject.Parse(dbContent);
+        var company = dbJson["companies"]?.FirstOrDefault(c => c["id"]?.ToString() == companyId);
+        if (company == null) return Results.NotFound("Empresa não encontrada");
+
+        string certName = company["certificateName"]?.ToString() ?? "";
+        var cert = GetCertificate(certName, password);
+        if (cert == null) return Results.BadRequest("Certificado inválido ou não encontrado.");
+
+        // 1. Assinar o XML
+        string signedXml = SignXml(xmlBody, cert, idEvento);
+
+        // 2. Envelopar SOAP
+        var soapEnvelope = $@"<soap12:Envelope xmlns:xsi=""http://www.w3.org/2001/XMLSchema-instance"" xmlns:xsd=""http://www.w3.org/2001/XMLSchema"" xmlns:soap12=""http://www.w3.org/2003/05/soap-envelope"">
+            <soap12:Body>
+                <nfeDadosMsg xmlns=""http://www.portalfiscal.inf.br/nfe/wsdl/NFeRecepcaoEvento4"">
+                    {signedXml}
+                </nfeDadosMsg>
+            </soap12:Body>
+        </soap12:Envelope>";
+
+        // 3. Enviar
+        var handler = new HttpClientHandler();
+        handler.ClientCertificates.Add(cert);
+        handler.ServerCertificateCustomValidationCallback = (message, cert, chain, errors) => true; 
+
+        using var client = new HttpClient(handler);
+        client.Timeout = TimeSpan.FromSeconds(30);
+        var url = "https://www.nfe.fazenda.gov.br/NFeRecepcaoEvento4/NFeRecepcaoEvento4.asmx";
+        var content = new StringContent(soapEnvelope, Encoding.UTF8, "application/soap+xml");
+        
+        var response = await client.PostAsync(url, content);
+        var responseXmlStr = await response.Content.ReadAsStringAsync();
+
+        // 4. Processar Retorno
+        var doc = XDocument.Parse(responseXmlStr);
+        var retEvento = doc.Descendants().FirstOrDefault(x => x.Name.LocalName == "retEvento");
+        
+        string cStat = retEvento?.Element(retEvento.GetDefaultNamespace() + "infEvento")?.Element(retEvento.GetDefaultNamespace() + "cStat")?.Value ?? "0";
+        string xMotivo = retEvento?.Element(retEvento.GetDefaultNamespace() + "infEvento")?.Element(retEvento.GetDefaultNamespace() + "xMotivo")?.Value ?? "Erro";
+
+        return Results.Ok(new { cStat, xMotivo, raw = responseXmlStr });
+
+    } catch (Exception ex) {
+        Console.WriteLine($"[ERRO MANIFEST] {ex}");
+        return Results.Problem($"Erro: {ex.Message}");
+    }
+});
+
+// --- FUNÇÃO PARA DISTDFE (CONSULTA) ---
+app.MapPost("/api/sefaz/dist-dfe", async (HttpContext context) => {
+    Console.WriteLine($"-> Consulta Geral (NSU)");
+    return await CallSefazDistDFe(context, false);
+});
+
+app.MapPost("/api/sefaz/fetch-xml", async (HttpContext context) => {
+    Console.WriteLine($"-> Consulta Específica (Chave)");
+    return await CallSefazDistDFe(context, true);
+});
+
 async Task<IResult> CallSefazDistDFe(HttpContext context, bool isSpecificKey = false)
 {
     try
@@ -216,57 +342,27 @@ async Task<IResult> CallSefazDistDFe(HttpContext context, bool isSpecificKey = f
         string companyId = context.Request.Headers["X-Company-ID"].ToString();
 
         if (string.IsNullOrEmpty(companyId)) return Results.BadRequest("Header X-Company-ID ausente");
-
         if (!File.Exists(dbPath)) return Results.NotFound("Banco de dados vazio");
         var dbContent = await File.ReadAllTextAsync(dbPath);
         var dbJson = JObject.Parse(dbContent);
-        
         var company = dbJson["companies"]?.FirstOrDefault(c => c["id"]?.ToString() == companyId);
         if (company == null) return Results.NotFound("Empresa não encontrada");
 
         string certName = company["certificateName"]?.ToString() ?? "";
-        var certPath = Path.Combine(BaseCertPath, certName);
-        
-        if (!File.Exists(certPath))
-        {
-            var altPath = Path.Combine(BaseCertPath, certName.Replace(" ", "_"));
-            if (File.Exists(altPath)) certPath = altPath;
-        }
-        
-        if (!File.Exists(certPath)) return Results.BadRequest($"Certificado não encontrado no disco.");
-
-        X509Certificate2 certificate;
-        try 
-        {
-             certificate = new X509Certificate2(certPath, password, X509KeyStorageFlags.EphemeralKeySet);
-        } 
-        catch 
-        {
-             try 
-             {
-                 certificate = new X509Certificate2(certPath, password, 
-                    X509KeyStorageFlags.MachineKeySet | X509KeyStorageFlags.PersistKeySet | X509KeyStorageFlags.Exportable);
-             } 
-             catch (System.Security.Cryptography.CryptographicException ce) 
-             {
-                 return Results.BadRequest($"Senha do certificado incorreta ou arquivo inválido.");
-             }
-        }
+        var cert = GetCertificate(certName, password);
+        if (cert == null) return Results.BadRequest("Certificado inválido ou não encontrado.");
 
         var wsdlNamespace = "http://www.portalfiscal.inf.br/nfe/wsdl/NFeDistribuicaoDFe";
-        
         var soapEnvelope = $@"<soap12:Envelope xmlns:xsi=""http://www.w3.org/2001/XMLSchema-instance"" xmlns:xsd=""http://www.w3.org/2001/XMLSchema"" xmlns:soap12=""http://www.w3.org/2003/05/soap-envelope"">
             <soap12:Body>
                 <nfeDistDFeInteresse xmlns=""{wsdlNamespace}"">
-                    <nfeDadosMsg>
-                        {xmlBody}
-                    </nfeDadosMsg>
+                    <nfeDadosMsg>{xmlBody}</nfeDadosMsg>
                 </nfeDistDFeInteresse>
             </soap12:Body>
         </soap12:Envelope>";
 
         var handler = new HttpClientHandler();
-        handler.ClientCertificates.Add(certificate);
+        handler.ClientCertificates.Add(cert);
         handler.ServerCertificateCustomValidationCallback = (message, cert, chain, errors) => true; 
 
         using var client = new HttpClient(handler);
@@ -275,8 +371,6 @@ async Task<IResult> CallSefazDistDFe(HttpContext context, bool isSpecificKey = f
         var content = new StringContent(soapEnvelope, Encoding.UTF8, "application/soap+xml");
         var actionUri = "http://www.portalfiscal.inf.br/nfe/wsdl/NFeDistribuicaoDFe/nfeDistDFeInteresse";
         content.Headers.ContentType.Parameters.Add(new System.Net.Http.Headers.NameValueHeaderValue("action", $"\"{actionUri}\""));
-
-        Console.WriteLine($"-> Enviando requisição SOAP 1.2 (SpecificKey: {isSpecificKey})...");
 
         var response = await client.PostAsync(url, content);
         var responseXmlStr = await response.Content.ReadAsStringAsync();
@@ -287,28 +381,18 @@ async Task<IResult> CallSefazDistDFe(HttpContext context, bool isSpecificKey = f
         var doc = XDocument.Parse(responseXmlStr);
         XNamespace nsSoap = "http://www.w3.org/2003/05/soap-envelope";
         XNamespace nsNfe = "http://www.portalfiscal.inf.br/nfe";
-
         var body = doc.Descendants(nsSoap + "Body").FirstOrDefault();
-        var retDistDFeInt = body?.Descendants(nsNfe + "retDistDFeInt").FirstOrDefault();
-
-        if (retDistDFeInt == null) retDistDFeInt = doc.Descendants().FirstOrDefault(x => x.Name.LocalName == "retDistDFeInt");
+        var retDistDFeInt = body?.Descendants(nsNfe + "retDistDFeInt").FirstOrDefault() ?? doc.Descendants().FirstOrDefault(x => x.Name.LocalName == "retDistDFeInt");
+        
         if (retDistDFeInt == null) return Results.Problem($"XML de resposta da SEFAZ inválido.");
 
         var cStat = retDistDFeInt.Element(nsNfe + "cStat")?.Value ?? retDistDFeInt.Element("cStat")?.Value;
         var xMotivo = retDistDFeInt.Element(nsNfe + "xMotivo")?.Value ?? retDistDFeInt.Element("xMotivo")?.Value;
         var maxNSU = retDistDFeInt.Element(nsNfe + "maxNSU")?.Value ?? retDistDFeInt.Element("maxNSU")?.Value;
         
-        Console.WriteLine($"[SEFAZ] Status: {cStat} - {xMotivo}");
-
         var processedInvoices = new List<object>();
-
-        // 138 = Documentos Localizados
-        // Se for consulta por chave, às vezes retorna 138 se achar, ou outros códigos.
-        // Verificamos se tem loteDistDFeInt
         var lote = retDistDFeInt.Element(nsNfe + "loteDistDFeInt") ?? retDistDFeInt.Element("loteDistDFeInt");
-        
-        if (lote != null)
-        {
+        if (lote != null) {
             var docZips = lote.Elements(nsNfe + "docZip").Any() ? lote.Elements(nsNfe + "docZip") : lote.Elements("docZip");
             processedInvoices = ParseDocZips(docZips, companyId);
         }
@@ -321,16 +405,6 @@ async Task<IResult> CallSefazDistDFe(HttpContext context, bool isSpecificKey = f
         return Results.Problem($"Erro Interno: {ex.Message}");
     }
 }
-
-app.MapPost("/api/sefaz/dist-dfe", async (HttpContext context) => {
-    Console.WriteLine($"-> Consulta Geral (NSU)");
-    return await CallSefazDistDFe(context, false);
-});
-
-app.MapPost("/api/sefaz/fetch-xml", async (HttpContext context) => {
-    Console.WriteLine($"-> Consulta Específica (Chave)");
-    return await CallSefazDistDFe(context, true);
-});
 
 app.Run();
 
