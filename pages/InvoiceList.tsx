@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useRef, useEffect } from 'react';
-import { Download, RefreshCw, FileCheck, Search, Filter, Copy, Check, Terminal, ChevronDown, ChevronUp, DownloadCloud, ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react';
+import { Download, RefreshCw, FileCheck, Search, Filter, Copy, Check, Terminal, ChevronDown, ChevronUp, DownloadCloud, ArrowUpDown, ArrowUp, ArrowDown, FileText } from 'lucide-react';
 import { useAppContext } from '../context/AppContext';
 import { formatCurrency, formatDate, formatAccessKey } from '../utils';
 // @ts-ignore
@@ -97,6 +97,11 @@ export const InvoiceList: React.FC = () => {
     return result;
   }, [invoices, selectedCompany, startDate, endDate, filters, sortConfig]);
 
+  // Count summaries for the button
+  const summaryCount = useMemo(() => {
+      return processedInvoices.filter(inv => inv.originalXml?.includes('resNFe')).length;
+  }, [processedInvoices]);
+
   const handleSyncSefaz = () => {
     setShowTerminal(true);
     searchInvoices(selectedCompany);
@@ -124,6 +129,42 @@ export const InvoiceList: React.FC = () => {
       newSelected.add(id);
     }
     setSelectedInvoices(newSelected);
+  };
+
+  // Function to download ONLY summaries from the current list
+  const handleDownloadAllSummaries = async () => {
+    const summaryInvoices = processedInvoices.filter(inv => inv.originalXml?.includes('resNFe'));
+    
+    if (summaryInvoices.length === 0) {
+        alert("Não há notas de resumo na lista atual para baixar.");
+        return;
+    }
+
+    setIsProcessing(true);
+    try {
+        const zip = new JSZip();
+        const folder = zip.folder("resumos_notas");
+        
+        summaryInvoices.forEach(inv => {
+            const xmlContent = inv.originalXml || "";
+            // Ensure we are saving as resumo
+            if (xmlContent.includes('resNFe')) {
+                folder.file(`${inv.accessKey}-resumo.xml`, xmlContent);
+            }
+        });
+
+        const content = await zip.generateAsync({ type: "blob" });
+        saveAs(content, `Lote_Resumos_${new Date().toISOString().slice(0,10)}.zip`);
+        
+        // We don't necessarily mark as downloaded since they are just summaries, 
+        // but if you want to mark them, uncomment below:
+        // markAsDownloaded(summaryInvoices.map(i => i.id));
+        
+    } catch (error) {
+        console.error("Erro ao baixar resumos:", error);
+    } finally {
+        setIsProcessing(false);
+    }
   };
 
   const handleDownload = async () => {
@@ -244,18 +285,34 @@ export const InvoiceList: React.FC = () => {
         <div className="text-sm text-gray-600">
           <span className="font-semibold text-gray-900">{processedInvoices.length}</span> documentos listados
         </div>
-        <button
-          onClick={handleDownload}
-          disabled={selectedInvoices.size === 0 || isProcessing}
-          className={`flex items-center gap-2 px-4 py-2 rounded-lg font-medium transition-all ${
-            selectedInvoices.size > 0 
-              ? 'bg-green-600 text-white hover:bg-green-700 shadow-md transform hover:-translate-y-0.5' 
-              : 'bg-gray-200 text-gray-400 cursor-not-allowed'
-          }`}
-        >
-          {isProcessing ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
-          {isProcessing ? 'Gerando...' : selectedInvoices.size > 1 ? `Baixar .ZIP (${selectedInvoices.size})` : 'Baixar XML'}
-        </button>
+
+        <div className="flex gap-2">
+            {/* BOTÃO NOVO: BAIXAR TODOS RESUMOS */}
+            {summaryCount > 0 && (
+                <button
+                    onClick={handleDownloadAllSummaries}
+                    disabled={isProcessing}
+                    className="flex items-center gap-2 px-4 py-2 rounded-lg font-medium text-yellow-700 bg-yellow-100 hover:bg-yellow-200 transition-all border border-yellow-200"
+                    title="Baixar ZIP contendo apenas os XMLs de Resumo listados abaixo"
+                >
+                     {isProcessing ? <RefreshCw className="w-4 h-4 animate-spin" /> : <FileText className="w-4 h-4" />}
+                     <span>Baixar Resumos ({summaryCount})</span>
+                </button>
+            )}
+
+            <button
+            onClick={handleDownload}
+            disabled={selectedInvoices.size === 0 || isProcessing}
+            className={`flex items-center gap-2 px-4 py-2 rounded-lg font-medium transition-all ${
+                selectedInvoices.size > 0 
+                ? 'bg-green-600 text-white hover:bg-green-700 shadow-md transform hover:-translate-y-0.5' 
+                : 'bg-gray-200 text-gray-400 cursor-not-allowed'
+            }`}
+            >
+            {isProcessing ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+            {isProcessing ? 'Gerando...' : selectedInvoices.size > 1 ? `Baixar Selecionados (${selectedInvoices.size})` : 'Baixar XML'}
+            </button>
+        </div>
       </div>
 
       {/* TABLE */}

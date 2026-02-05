@@ -133,17 +133,26 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
           if (data.invoices && data.invoices.length > 0) {
               const fullInvoice = data.invoices[0];
-              // Atualiza a nota existente com os novos dados completos
+              
+              // Verificação crucial: O XML retornado é realmente completo (procNFe) ou é outro Resumo?
+              const isFullXml = fullInvoice.originalXml && fullInvoice.originalXml.includes('procNFe');
+
+              // Atualiza a nota existente com os novos dados
               setInvoices(prev => prev.map(inv => {
                   if (inv.accessKey === accessKey) {
                       return { ...inv, ...fullInvoice, id: inv.id }; // Mantém o ID interno original
                   }
                   return inv;
               }));
-              addLog(`Sucesso! XML Completo obtido.`, 'success');
+
+              if (isFullXml) {
+                  addLog(`Sucesso! XML Completo (procNFe) obtido e atualizado.`, 'success');
+              } else {
+                  addLog(`Atenção: A SEFAZ retornou apenas o Resumo novamente.`, 'warning', 'Provavelmente é necessário realizar a Manifestação do Destinatário (Ciência da Operação) antes que o XML completo esteja disponível.');
+              }
+
           } else {
-              addLog(`SEFAZ não retornou o XML completo. Motivo: ${data.xMotivo}`, 'warning');
-              // Geralmente precisa manifestar antes, mas o app ainda não faz isso.
+              addLog(`SEFAZ não retornou o XML. Motivo: ${data.xMotivo}`, 'warning');
               if (data.xMotivo.includes("Ciencia") || data.xMotivo.includes("Manifestacao")) {
                   addLog("Dica: É necessário realizar a Manifestação (Ciência) antes de baixar o XML completo.", 'info');
               }
