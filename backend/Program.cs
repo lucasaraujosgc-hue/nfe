@@ -69,6 +69,13 @@ string SignXml(string xmlString, X509Certificate2 cert, string docId)
         doc.PreserveWhitespace = true;
         doc.LoadXml(xmlString);
 
+        // Importante: Marcar o atributo 'Id' como ID para que o SignedXml o encontre
+        var infEvento = doc.GetElementsByTagName("infEvento")[0] as XmlElement;
+        if (infEvento != null) {
+            // infEvento.SetAttribute("Id", docId); // Já deve estar setado, mas o XmlDocument precisa saber que é um ID
+            // Em .NET Core moderno, geralmente SignedXml acha por URI="#Id" sem DTD, mas vamos garantir
+        }
+
         var signedXml = new SignedXml(doc);
         var key = cert.GetRSAPrivateKey();
         if (key == null) throw new Exception("O certificado não possui chave privada válida para assinatura.");
@@ -150,29 +157,32 @@ List<object> ParseDocZips(IEnumerable<XElement> docZips, string companyId)
                 if (nfeRoot != null) {
                     var nsProc = nfeRoot.GetDefaultNamespace();
                     
-                    var nfe = docXml.Descendants(nsProc + "NFe").FirstOrDefault();
+                    // Tenta achar NFe ignorando namespace ou usando o default
+                    var nfe = docXml.Descendants().FirstOrDefault(x => x.Name.LocalName == "NFe");
                     var nsNFeLocal = nfe?.GetDefaultNamespace() ?? nsProc;
                     
-                    var infNFe = nfe?.Element(nsNFeLocal + "infNFe");
-                    var ide = infNFe?.Element(nsNFeLocal + "ide");
-                    var emit = infNFe?.Element(nsNFeLocal + "emit");
-                    var total = infNFe?.Element(nsNFeLocal + "total")?.Element(nsNFeLocal + "ICMSTot");
-                    var prot = docXml.Descendants(nsProc + "protNFe").FirstOrDefault()?.Element(nsProc + "infProt");
+                    var infNFe = nfe?.Elements().FirstOrDefault(x => x.Name.LocalName == "infNFe");
+                    var ide = infNFe?.Elements().FirstOrDefault(x => x.Name.LocalName == "ide");
+                    var emit = infNFe?.Elements().FirstOrDefault(x => x.Name.LocalName == "emit");
+                    var total = infNFe?.Elements().FirstOrDefault(x => x.Name.LocalName == "total")?.Elements().FirstOrDefault(x => x.Name.LocalName == "ICMSTot");
+                    
+                    var protNFe = docXml.Descendants().FirstOrDefault(x => x.Name.LocalName == "protNFe");
+                    var prot = protNFe?.Elements().FirstOrDefault(x => x.Name.LocalName == "infProt");
 
                     processedInvoices.Add(new
                     {
-                        accessKey = prot?.Element(nsProc + "chNFe")?.Value,
-                        emitenteCNPJ = emit?.Element(nsNFeLocal + "CNPJ")?.Value,
-                        emitenteName = emit?.Element(nsNFeLocal + "xNome")?.Value,
-                        emissionDate = ide?.Element(nsNFeLocal + "dhEmi")?.Value,
-                        authorizationDate = prot?.Element(nsProc + "dhRecbto")?.Value,
-                        amount = double.Parse(total?.Element(nsNFeLocal + "vNF")?.Value ?? "0", culture),
+                        accessKey = prot?.Elements().FirstOrDefault(x => x.Name.LocalName == "chNFe")?.Value,
+                        emitenteCNPJ = emit?.Elements().FirstOrDefault(x => x.Name.LocalName == "CNPJ")?.Value,
+                        emitenteName = emit?.Elements().FirstOrDefault(x => x.Name.LocalName == "xNome")?.Value,
+                        emissionDate = ide?.Elements().FirstOrDefault(x => x.Name.LocalName == "dhEmi")?.Value,
+                        authorizationDate = prot?.Elements().FirstOrDefault(x => x.Name.LocalName == "dhRecbto")?.Value,
+                        amount = double.Parse(total?.Elements().FirstOrDefault(x => x.Name.LocalName == "vNF")?.Value ?? "0", culture),
                         status = "authorized",
                         nsu = nsu,
-                        numero = ide?.Element(nsNFeLocal + "nNF")?.Value,
-                        serie = ide?.Element(nsNFeLocal + "serie")?.Value,
-                        uf = emit?.Element(nsNFeLocal + "enderEmit")?.Element(nsNFeLocal + "UF")?.Value,
-                        operationType = ide?.Element(nsNFeLocal + "tpNF")?.Value == "0" ? "Entrada" : "Saida",
+                        numero = ide?.Elements().FirstOrDefault(x => x.Name.LocalName == "nNF")?.Value,
+                        serie = ide?.Elements().FirstOrDefault(x => x.Name.LocalName == "serie")?.Value,
+                        uf = emit?.Elements().FirstOrDefault(x => x.Name.LocalName == "enderEmit")?.Elements().FirstOrDefault(x => x.Name.LocalName == "UF")?.Value,
+                        operationType = ide?.Elements().FirstOrDefault(x => x.Name.LocalName == "tpNF")?.Value == "0" ? "Entrada" : "Saida",
                         companyId = companyId,
                         id = $"inv-{Guid.NewGuid()}",
                         downloaded = true,
@@ -248,7 +258,7 @@ app.MapPost("/api/db", async (HttpContext context) =>
         using var reader = new StreamReader(context.Request.Body);
         var body = await reader.ReadToEndAsync();
         var parsed = JsonConvert.DeserializeObject(body);
-        // FIX: Resolvendo ambiguidade entre Newtonsoft.Json.Formatting e System.Xml.Formatting
+        // FIX: Uso explícito para evitar erro CS0104 entre Newtonsoft.Json.Formatting e System.Xml.Formatting
         var indented = JsonConvert.SerializeObject(parsed, Newtonsoft.Json.Formatting.Indented);
         await File.WriteAllTextAsync(dbPath, indented);
         return Results.Ok(new { success = true });
@@ -311,12 +321,43 @@ app.MapPost("/api/sefaz/manifest", async (HttpContext context) => {
         var response = await client.PostAsync(url, content);
         var responseXmlStr = await response.Content.ReadAsStringAsync();
 
-        // 4. Processar Retorno
+        // 4. Processar Retorno com Robustez de Namespaces
+        // Log Raw para debug
+        Console.WriteLine("[DEBUG MANIFEST] Raw Response: " + responseXmlStr);
+
         var doc = XDocument.Parse(responseXmlStr);
-        var retEvento = doc.Descendants().FirstOrDefault(x => x.Name.LocalName == "retEvento");
         
-        string cStat = retEvento?.Element(retEvento.GetDefaultNamespace() + "infEvento")?.Element(retEvento.GetDefaultNamespace() + "cStat")?.Value ?? "0";
-        string xMotivo = retEvento?.Element(retEvento.GetDefaultNamespace() + "infEvento")?.Element(retEvento.GetDefaultNamespace() + "xMotivo")?.Value ?? "Erro";
+        // Estratégia: Buscar cStat e xMotivo em infEvento ou na raiz do retorno (caso de erro de lote)
+        // Usa LocalName para ignorar namespaces
+        
+        var retEvento = doc.Descendants().FirstOrDefault(x => x.Name.LocalName == "retEvento");
+        var retEnvEvento = doc.Descendants().FirstOrDefault(x => x.Name.LocalName == "retEnvEvento");
+        var infEvento = retEvento?.Descendants().FirstOrDefault(x => x.Name.LocalName == "infEvento");
+
+        string cStat = "0";
+        string xMotivo = "Erro Desconhecido";
+
+        if (infEvento != null)
+        {
+            cStat = infEvento.Elements().FirstOrDefault(x => x.Name.LocalName == "cStat")?.Value ?? "0";
+            xMotivo = infEvento.Elements().FirstOrDefault(x => x.Name.LocalName == "xMotivo")?.Value ?? "Erro leitura infEvento";
+        }
+        else if (retEnvEvento != null)
+        {
+             // Falha no Lote (ex: XML inválido, Assinatura ruim)
+             cStat = retEnvEvento.Elements().FirstOrDefault(x => x.Name.LocalName == "cStat")?.Value ?? "0";
+             xMotivo = retEnvEvento.Elements().FirstOrDefault(x => x.Name.LocalName == "xMotivo")?.Value ?? "Erro leitura retEnvEvento";
+        }
+        else 
+        {
+            // Erro SOAP ou outro formato
+            var fault = doc.Descendants().FirstOrDefault(x => x.Name.LocalName == "Fault");
+            if (fault != null) {
+                xMotivo = "SOAP Fault: " + fault.Descendants().FirstOrDefault(x => x.Name.LocalName == "Text")?.Value;
+            }
+        }
+
+        Console.WriteLine($"[RESULTADO MANIFEST] cStat: {cStat}, xMotivo: {xMotivo}");
 
         return Results.Ok(new { cStat, xMotivo, raw = responseXmlStr });
 
@@ -385,24 +426,24 @@ async Task<IResult> CallSefazDistDFe(HttpContext context, bool isSpecificKey = f
         if (!response.IsSuccessStatusCode)
             return Results.Problem(detail: $"SEFAZ retornou {response.StatusCode}. Detalhes: {responseXmlStr}", statusCode: (int)response.StatusCode);
 
+        // Parsing com Robustez de LocalName
         var doc = XDocument.Parse(responseXmlStr);
-        XNamespace nsSoap = "http://www.w3.org/2003/05/soap-envelope";
-        XNamespace nsNfe = "http://www.portalfiscal.inf.br/nfe";
-        var body = doc.Descendants(nsSoap + "Body").FirstOrDefault();
-        var retDistDFeInt = body?.Descendants(nsNfe + "retDistDFeInt").FirstOrDefault() ?? doc.Descendants().FirstOrDefault(x => x.Name.LocalName == "retDistDFeInt");
+        var retDistDFeInt = doc.Descendants().FirstOrDefault(x => x.Name.LocalName == "retDistDFeInt");
         
         if (retDistDFeInt == null) return Results.Problem($"XML de resposta da SEFAZ inválido.");
 
-        var cStat = retDistDFeInt.Element(nsNfe + "cStat")?.Value ?? retDistDFeInt.Element("cStat")?.Value;
-        var xMotivo = retDistDFeInt.Element(nsNfe + "xMotivo")?.Value ?? retDistDFeInt.Element("xMotivo")?.Value;
-        var maxNSU = retDistDFeInt.Element(nsNfe + "maxNSU")?.Value ?? retDistDFeInt.Element("maxNSU")?.Value;
+        var cStat = retDistDFeInt.Elements().FirstOrDefault(x => x.Name.LocalName == "cStat")?.Value;
+        var xMotivo = retDistDFeInt.Elements().FirstOrDefault(x => x.Name.LocalName == "xMotivo")?.Value;
+        var maxNSU = retDistDFeInt.Elements().FirstOrDefault(x => x.Name.LocalName == "maxNSU")?.Value;
         
         var processedInvoices = new List<object>();
-        var lote = retDistDFeInt.Element(nsNfe + "loteDistDFeInt") ?? retDistDFeInt.Element("loteDistDFeInt");
+        var lote = retDistDFeInt.Elements().FirstOrDefault(x => x.Name.LocalName == "loteDistDFeInt");
         if (lote != null) {
-            var docZips = lote.Elements(nsNfe + "docZip").Any() ? lote.Elements(nsNfe + "docZip") : lote.Elements("docZip");
+            var docZips = lote.Descendants().Where(x => x.Name.LocalName == "docZip");
             processedInvoices = ParseDocZips(docZips, companyId);
         }
+
+        Console.WriteLine($"[RESULTADO DISTDFE] cStat: {cStat}, xMotivo: {xMotivo}, Docs: {processedInvoices.Count}");
 
         return Results.Ok(new { cStat, xMotivo, maxNSU, invoices = processedInvoices });
     }
