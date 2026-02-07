@@ -9,7 +9,8 @@ import { saveAs } from 'file-saver';
 import { Invoice } from '../types';
 
 export const InvoiceList: React.FC = () => {
-  const { companies, invoices, isLoading, searchInvoices, fetchFullXml, manifestInvoice, markAsDownloaded, logs } = useAppContext();
+  // Adicionado isError para feedback visual
+  const { companies, invoices, isLoading, isError, searchInvoices, fetchFullXml, manifestInvoice, markAsDownloaded, logs } = useAppContext();
   
   const [selectedCompany, setSelectedCompany] = useState<string>(companies[0]?.id || '');
   
@@ -144,7 +145,7 @@ export const InvoiceList: React.FC = () => {
               if (confirmManifest) {
                   const manifestSuccess = await manifestInvoice(inv.companyId, inv.accessKey);
                   if (manifestSuccess) {
-                      // 3. Aguardar 1 segundo para processamento da SEFAZ
+                      // 3. Aguardar 1.5s para processamento da SEFAZ
                       await new Promise(r => setTimeout(r, 1500));
                       // 4. Tentar baixar novamente
                       await fetchFullXml(inv.companyId, inv.accessKey);
@@ -228,6 +229,33 @@ export const InvoiceList: React.FC = () => {
         : <ArrowDown className="w-3 h-3 text-blue-600 ml-1 inline" />;
   };
 
+  // TELA DE ERRO DE CONEXÃO
+  if (isError) {
+      return (
+          <div className="flex flex-col items-center justify-center h-[70vh] text-center p-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
+              <div className="bg-red-100 p-6 rounded-full mb-6">
+                  <AlertTriangle className="w-16 h-16 text-red-600" />
+              </div>
+              <h2 className="text-2xl font-bold text-gray-900 mb-2">Serviço Indisponível</h2>
+              <p className="text-gray-600 max-w-lg mb-6">
+                  Não foi possível conectar ao servidor Backend. Isso geralmente acontece quando o serviço .NET não está rodando.
+              </p>
+              <div className="bg-gray-100 p-4 rounded-lg text-left max-w-lg w-full font-mono text-xs text-gray-700 border border-gray-300 shadow-inner">
+                 <p className="font-bold mb-2">// Dicas de Solução:</p>
+                 <p>1. Verifique se o comando 'dotnet run' está rodando no terminal.</p>
+                 <p>2. Certifique-se de que o backend está na porta 5000.</p>
+                 <p>3. Verifique se não há erros de compilação no console.</p>
+              </div>
+              <button 
+                onClick={() => window.location.reload()} 
+                className="mt-8 px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium shadow-sm"
+              >
+                Tentar Conectar Novamente
+              </button>
+          </div>
+      );
+  }
+
   return (
     <div className="space-y-6 pb-20">
       
@@ -295,7 +323,7 @@ export const InvoiceList: React.FC = () => {
         </div>
 
         <div className="flex gap-2">
-            {/* BOTÃO ALTERADO: BAIXAR COMPLETO FORÇADO */}
+            {/* BOTÃO COMPLETO FORÇADO */}
             {summaryCount > 0 && (
                 <button
                     onClick={handleBatchForceDownload}
