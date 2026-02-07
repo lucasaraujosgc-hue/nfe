@@ -70,7 +70,9 @@ string SignXml(string xmlString, X509Certificate2 cert, string docId)
         doc.LoadXml(xmlString);
 
         var signedXml = new SignedXml(doc);
-        signedXml.SigningKey = cert.GetRSAPrivateKey();
+        var key = cert.GetRSAPrivateKey();
+        if (key == null) throw new Exception("O certificado não possui chave privada válida para assinatura.");
+        signedXml.SigningKey = key;
 
         // Referência ao ID do elemento a ser assinado (infEvento)
         var reference = new Reference();
@@ -122,57 +124,61 @@ List<object> ParseDocZips(IEnumerable<XElement> docZips, string companyId)
             if (schema != null && schema.Contains("resNFe"))
             {
                 var resNFe = docXml.Root;
-                var nsRes = resNFe.GetDefaultNamespace();
-                
-                processedInvoices.Add(new {
-                    accessKey = resNFe.Element(nsRes + "chNFe")?.Value,
-                    emitenteCNPJ = resNFe.Element(nsRes + "CNPJ")?.Value ?? resNFe.Element(nsRes + "CPF")?.Value,
-                    emitenteName = resNFe.Element(nsRes + "xNome")?.Value,
-                    emissionDate = resNFe.Element(nsRes + "dhEmi")?.Value,
-                    amount = double.Parse(resNFe.Element(nsRes + "vNF")?.Value ?? "0", culture),
-                    status = resNFe.Element(nsRes + "cSitNFe")?.Value == "1" ? "authorized" : "canceled",
-                    nsu = nsu,
-                    numero = "000",
-                    serie = "0",
-                    companyId = companyId,
-                    id = $"inv-{Guid.NewGuid()}", 
-                    downloaded = false,
-                    originalXml = xmlContent
-                });
+                if (resNFe != null) {
+                    var nsRes = resNFe.GetDefaultNamespace();
+                    
+                    processedInvoices.Add(new {
+                        accessKey = resNFe.Element(nsRes + "chNFe")?.Value,
+                        emitenteCNPJ = resNFe.Element(nsRes + "CNPJ")?.Value ?? resNFe.Element(nsRes + "CPF")?.Value,
+                        emitenteName = resNFe.Element(nsRes + "xNome")?.Value,
+                        emissionDate = resNFe.Element(nsRes + "dhEmi")?.Value,
+                        amount = double.Parse(resNFe.Element(nsRes + "vNF")?.Value ?? "0", culture),
+                        status = resNFe.Element(nsRes + "cSitNFe")?.Value == "1" ? "authorized" : "canceled",
+                        nsu = nsu,
+                        numero = "000",
+                        serie = "0",
+                        companyId = companyId,
+                        id = $"inv-{Guid.NewGuid()}", 
+                        downloaded = false,
+                        originalXml = xmlContent
+                    });
+                }
             }
             else if (schema != null && schema.Contains("procNFe"))
             {
                 var nfeRoot = docXml.Root; 
-                var nsProc = nfeRoot.GetDefaultNamespace();
-                
-                var nfe = docXml.Descendants(nsProc + "NFe").FirstOrDefault();
-                var nsNFeLocal = nfe?.GetDefaultNamespace() ?? nsProc;
-                
-                var infNFe = nfe?.Element(nsNFeLocal + "infNFe");
-                var ide = infNFe?.Element(nsNFeLocal + "ide");
-                var emit = infNFe?.Element(nsNFeLocal + "emit");
-                var total = infNFe?.Element(nsNFeLocal + "total")?.Element(nsNFeLocal + "ICMSTot");
-                var prot = docXml.Descendants(nsProc + "protNFe").FirstOrDefault()?.Element(nsProc + "infProt");
+                if (nfeRoot != null) {
+                    var nsProc = nfeRoot.GetDefaultNamespace();
+                    
+                    var nfe = docXml.Descendants(nsProc + "NFe").FirstOrDefault();
+                    var nsNFeLocal = nfe?.GetDefaultNamespace() ?? nsProc;
+                    
+                    var infNFe = nfe?.Element(nsNFeLocal + "infNFe");
+                    var ide = infNFe?.Element(nsNFeLocal + "ide");
+                    var emit = infNFe?.Element(nsNFeLocal + "emit");
+                    var total = infNFe?.Element(nsNFeLocal + "total")?.Element(nsNFeLocal + "ICMSTot");
+                    var prot = docXml.Descendants(nsProc + "protNFe").FirstOrDefault()?.Element(nsProc + "infProt");
 
-                processedInvoices.Add(new
-                {
-                    accessKey = prot?.Element(nsProc + "chNFe")?.Value,
-                    emitenteCNPJ = emit?.Element(nsNFeLocal + "CNPJ")?.Value,
-                    emitenteName = emit?.Element(nsNFeLocal + "xNome")?.Value,
-                    emissionDate = ide?.Element(nsNFeLocal + "dhEmi")?.Value,
-                    authorizationDate = prot?.Element(nsProc + "dhRecbto")?.Value,
-                    amount = double.Parse(total?.Element(nsNFeLocal + "vNF")?.Value ?? "0", culture),
-                    status = "authorized",
-                    nsu = nsu,
-                    numero = ide?.Element(nsNFeLocal + "nNF")?.Value,
-                    serie = ide?.Element(nsNFeLocal + "serie")?.Value,
-                    uf = emit?.Element(nsNFeLocal + "enderEmit")?.Element(nsNFeLocal + "UF")?.Value,
-                    operationType = ide?.Element(nsNFeLocal + "tpNF")?.Value == "0" ? "Entrada" : "Saida",
-                    companyId = companyId,
-                    id = $"inv-{Guid.NewGuid()}",
-                    downloaded = true,
-                    originalXml = xmlContent
-                });
+                    processedInvoices.Add(new
+                    {
+                        accessKey = prot?.Element(nsProc + "chNFe")?.Value,
+                        emitenteCNPJ = emit?.Element(nsNFeLocal + "CNPJ")?.Value,
+                        emitenteName = emit?.Element(nsNFeLocal + "xNome")?.Value,
+                        emissionDate = ide?.Element(nsNFeLocal + "dhEmi")?.Value,
+                        authorizationDate = prot?.Element(nsProc + "dhRecbto")?.Value,
+                        amount = double.Parse(total?.Element(nsNFeLocal + "vNF")?.Value ?? "0", culture),
+                        status = "authorized",
+                        nsu = nsu,
+                        numero = ide?.Element(nsNFeLocal + "nNF")?.Value,
+                        serie = ide?.Element(nsNFeLocal + "serie")?.Value,
+                        uf = emit?.Element(nsNFeLocal + "enderEmit")?.Element(nsNFeLocal + "UF")?.Value,
+                        operationType = ide?.Element(nsNFeLocal + "tpNF")?.Value == "0" ? "Entrada" : "Saida",
+                        companyId = companyId,
+                        id = $"inv-{Guid.NewGuid()}",
+                        downloaded = true,
+                        originalXml = xmlContent
+                    });
+                }
             }
         } catch (Exception parseEx) {
             Console.WriteLine($"[ERRO PARSE DOC] {parseEx.Message}");
@@ -242,7 +248,8 @@ app.MapPost("/api/db", async (HttpContext context) =>
         using var reader = new StreamReader(context.Request.Body);
         var body = await reader.ReadToEndAsync();
         var parsed = JsonConvert.DeserializeObject(body);
-        var indented = JsonConvert.SerializeObject(parsed, Formatting.Indented);
+        // FIX: Resolvendo ambiguidade entre Newtonsoft.Json.Formatting e System.Xml.Formatting
+        var indented = JsonConvert.SerializeObject(parsed, Newtonsoft.Json.Formatting.Indented);
         await File.WriteAllTextAsync(dbPath, indented);
         return Results.Ok(new { success = true });
     } catch (Exception ex) {
