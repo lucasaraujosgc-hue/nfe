@@ -70,11 +70,12 @@ string SignXml(string xmlString, X509Certificate2 cert, string docId)
         doc.LoadXml(xmlString);
 
         // Importante: Marcar o atributo 'Id' como ID para que o SignedXml o encontre
-        var infEvento = doc.GetElementsByTagName("infEvento")[0] as XmlElement;
-        if (infEvento != null) {
-            // infEvento.SetAttribute("Id", docId); // Já deve estar setado, mas o XmlDocument precisa saber que é um ID
-            // Em .NET Core moderno, geralmente SignedXml acha por URI="#Id" sem DTD, mas vamos garantir
-        }
+        var elements = doc.GetElementsByTagName("infEvento");
+        if (elements.Count == 0) throw new Exception("Elemento 'infEvento' não encontrado para assinatura.");
+        
+        var infEventoNode = elements[0] as XmlElement;
+        
+        // Em .NET Core moderno, geralmente SignedXml acha por URI="#Id" sem DTD, mas vamos garantir que o nó existe
 
         var signedXml = new SignedXml(doc);
         var key = cert.GetRSAPrivateKey();
@@ -101,8 +102,11 @@ string SignXml(string xmlString, X509Certificate2 cert, string docId)
         var xmlDigitalSignature = signedXml.GetXml();
         
         // Adiciona a assinatura dentro da tag <evento>, após <infEvento>
-        var eventoNode = doc.GetElementsByTagName("evento")[0];
-        eventoNode.AppendChild(doc.ImportNode(xmlDigitalSignature, true));
+        var eventoList = doc.GetElementsByTagName("evento");
+        if (eventoList.Count == 0) throw new Exception("Elemento 'evento' não encontrado.");
+        
+        var eventoNode = eventoList[0];
+        eventoNode?.AppendChild(doc.ImportNode(xmlDigitalSignature, true));
 
         return doc.OuterXml;
     }
@@ -332,15 +336,15 @@ app.MapPost("/api/sefaz/manifest", async (HttpContext context) => {
         
         var retEvento = doc.Descendants().FirstOrDefault(x => x.Name.LocalName == "retEvento");
         var retEnvEvento = doc.Descendants().FirstOrDefault(x => x.Name.LocalName == "retEnvEvento");
-        var infEvento = retEvento?.Descendants().FirstOrDefault(x => x.Name.LocalName == "infEvento");
+        var responseInfEvento = retEvento?.Descendants().FirstOrDefault(x => x.Name.LocalName == "infEvento");
 
         string cStat = "0";
         string xMotivo = "Erro Desconhecido";
 
-        if (infEvento != null)
+        if (responseInfEvento != null)
         {
-            cStat = infEvento.Elements().FirstOrDefault(x => x.Name.LocalName == "cStat")?.Value ?? "0";
-            xMotivo = infEvento.Elements().FirstOrDefault(x => x.Name.LocalName == "xMotivo")?.Value ?? "Erro leitura infEvento";
+            cStat = responseInfEvento.Elements().FirstOrDefault(x => x.Name.LocalName == "cStat")?.Value ?? "0";
+            xMotivo = responseInfEvento.Elements().FirstOrDefault(x => x.Name.LocalName == "xMotivo")?.Value ?? "Erro leitura infEvento";
         }
         else if (retEnvEvento != null)
         {
